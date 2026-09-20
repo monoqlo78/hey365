@@ -1,0 +1,21 @@
+# Logs
+*.log
+npm-debug.log*
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Local state (drafts, triage cache)
+.hey365/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+*.swp
+
+# Env
+.env
+.env.*
