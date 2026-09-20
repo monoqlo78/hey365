@@ -25,6 +25,12 @@ export interface NormalizedMessage {
   mentionsMe: boolean;
   /** The message @-mentions somebody, and that somebody is not me. */
   mentionsOthers?: boolean;
+  /** Mail that reached me through a distribution list, not as a named recipient. */
+  isBroadcast?: boolean;
+  /** Outlook filed this under "Other", i.e. newsletters and bulk mail. */
+  isLowPriorityInbox?: boolean;
+  /** A calendar invitation delivered as mail (`#microsoft.graph.eventMessage`). */
+  isEventMessage?: boolean;
   isRead?: boolean;
   importance?: string;
   webLink?: string;

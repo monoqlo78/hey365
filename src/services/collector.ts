@@ -224,6 +224,8 @@ export async function runTriage(options: TriageRunOptions): Promise<TriageResult
         skipped.automated += 1;
         break;
       case 'cc_only':
+      case 'broadcast':
+      case 'delegated':
         skipped.ccOnly += 1;
         break;
       case 'fyi':

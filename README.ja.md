@@ -194,6 +194,7 @@ node dist/index.js health --deep
 |---|---|---|
 | `HEY365_TIMEZONE` | `Asia/Tokyo` | 表示タイムゾーン |
 | `HEY365_VIP` | – | 重要送信者のアドレス（カンマ区切り）。重要度を加点 |
+| `HEY365_MY_NAMES` | – | 自分の名前の別表記（例: `曽我部,Sogabe`）。本文で名指しされたかの判定に使用 |
 | `HEY365_WORKIQ_COMMAND` | 自動 | Work IQ CLI の起動方法を上書き |
 | `HEY365_WORKIQ_ACCOUNT` | – | 複数アカウント時に使用するアカウント |
 | `HEY365_WORKIQ_TIMEOUT_MS` | `120000` | 1回あたりのタイムアウト |

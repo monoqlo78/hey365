@@ -39,7 +39,10 @@ export async function generateDraft(context: DraftContext): Promise<ReplyDraft> 
     const cleaned = cleanDraft(response.text, language);
     if (cleaned && cleaned.length >= 8) {
       const needsDecision = UNKNOWN_MARKERS.test(cleaned) ? missingDecisionNote(context.thread, language) : undefined;
-      return draft(cleaned, language, 'workiq-ask', needsDecision);
+      // The ⚠ note already says a decision is needed, so keep only the part
+      // that explains what is missing.
+      const body = needsDecision ? stripDecisionPreamble(cleaned) : cleaned;
+      return draft(body, language, 'workiq-ask', needsDecision);
     }
     logger.debug('ask returned an unusable draft, falling back to template');
   } catch (error) {
@@ -47,6 +50,15 @@ export async function generateDraft(context: DraftContext): Promise<ReplyDraft> 
   }
 
   return templateDraft(context, language);
+}
+
+/** Removes the "a decision is required" lead-in that the ⚠ note repeats. */
+function stripDecisionPreamble(text: string): string {
+  const stripped = text
+    .replace(/^返信するには判断が必要です[。、]?\s*/, '')
+    .replace(/^a decision is required before replying[.:]?\s*/i, '')
+    .trim();
+  return stripped.length >= 8 ? stripped : text;
 }
 
 /** Applies a natural-language edit ("softer", "shorter", "in English"). */
@@ -179,6 +191,8 @@ export function cleanDraft(raw: string, language: Language): string {
   // The model sometimes quotes the required phrase verbatim from the prompt.
   text = text.replace(/^「(返信するには判断が必要です)」/, '$1');
   text = text.replace(/^"(A decision is required before replying)"/i, '$1');
+  // The model often drops the sentence break after the required phrase.
+  text = text.replace(/^(返信するには判断が必要です)(?=[^\s。、:：])/, '$1。');
 
   for (const tell of AI_TELLS) text = text.replace(tell, '');
 

@@ -194,6 +194,7 @@ node dist/index.js health --deep
 |---|---|---|
 | `HEY365_TIMEZONE` | `Asia/Tokyo` | Display timezone |
 | `HEY365_VIP` | – | Comma-separated addresses that get an importance boost |
+| `HEY365_MY_NAMES` | – | Extra spellings of your name (e.g. `曽我部,Sogabe`) used to detect when someone addresses you by name |
 | `HEY365_WORKIQ_COMMAND` | auto | Override how the Work IQ CLI is launched |
 | `HEY365_WORKIQ_ACCOUNT` | – | Account to use when several are signed in |
 | `HEY365_WORKIQ_TIMEOUT_MS` | `120000` | Per-call timeout |

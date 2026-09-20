@@ -44,6 +44,8 @@ export interface GraphMessage {
   webLink?: string;
   isDraft?: boolean;
   inferenceClassification?: string;
+  /** Set locally when the message was read out of the SentItems folder. */
+  fromSentItems?: boolean;
   '@odata.type'?: string;
 }
 
@@ -116,7 +118,7 @@ export function mailUrl(since: Date, top: number): string {
 export function sentMailUrl(since: Date, top: number): string {
   return (
     `/me/mailFolders/SentItems/messages?$filter=sentDateTime ge ${toGraphTimestamp(since)}` +
-    `&$orderby=sentDateTime desc&$top=${top}&$select=id,conversationId,subject,sentDateTime,toRecipients,bodyPreview`
+    `&$orderby=sentDateTime desc&$top=${top}&$select=${MAIL_SELECT}`
   );
 }
 
@@ -165,7 +167,9 @@ export async function listRecentMail(since: Date, top = 80): Promise<GraphMessag
     // for threads that started before the window.
     sentMailUrl(new Date(since.getTime() - 7 * 24 * 3600_000), top),
   ]);
-  return [...(inbox?.data?.value ?? []), ...(sent?.data?.value ?? [])];
+  // Anything pulled from SentItems is mine even if `from` comes back empty.
+  const sentItems = (sent?.data?.value ?? []).map((message) => ({ ...message, fromSentItems: true }));
+  return [...(inbox?.data?.value ?? []), ...sentItems];
 }
 
 export async function listSentMail(since: Date, top = 80): Promise<GraphMessage[]> {
@@ -274,13 +278,23 @@ export interface Identity {
   id: string;
   name: string;
   addresses: string[];
+  /** Extra spellings of my name, e.g. 曽我部 — from HEY365_MY_NAMES. */
+  aliases?: string[];
 }
 
 export function buildIdentity(user: GraphUser): Identity {
   const addresses = [user.mail, user.userPrincipalName]
     .filter((value): value is string => Boolean(value))
     .map((value) => value.toLowerCase());
-  return { id: user.id, name: user.displayName ?? user.mail ?? 'me', addresses };
+  const aliases = [user.givenName, user.surname, ...(process.env.HEY365_MY_NAMES ?? '').split(',')]
+    .map((value) => value?.trim().toLowerCase() ?? '')
+    .filter((value) => value.length >= 2);
+  return {
+    id: user.id,
+    name: user.displayName ?? user.mail ?? 'me',
+    addresses,
+    aliases: [...new Set(aliases)],
+  };
 }
 
 function toParticipant(recipient: GraphRecipient | undefined): Participant {
@@ -301,7 +315,7 @@ export function normalizeMailMessage(message: GraphMessage, identity: Identity):
   const from = toParticipant(message.from ?? message.sender);
   const to = (message.toRecipients ?? []).map(toParticipant);
   const cc = (message.ccRecipients ?? []).map(toParticipant);
-  const isFromMe = isMeAddress(identity, from.address) || from.name === identity.name;
+  const isFromMe = message.fromSentItems === true || isMeAddress(identity, from.address) || from.name === identity.name;
   const inTo = to.some((recipient) => isMeAddress(identity, recipient.address));
   const inCc = cc.some((recipient) => isMeAddress(identity, recipient.address));
   const bodyRaw = message.body?.contentType?.toLowerCase() === 'html'
@@ -323,6 +337,10 @@ export function normalizeMailMessage(message: GraphMessage, identity: Identity):
     createdDateTime: timestamp,
     isFromMe,
     isCcOnlyForMe: !isFromMe && !inTo && inCc,
+    // Delivered through a distribution list: my address is on neither line.
+    ...(!isFromMe && !inTo && !inCc ? { isBroadcast: true } : {}),
+    ...(message.inferenceClassification?.toLowerCase() === 'other' ? { isLowPriorityInbox: true } : {}),
+    ...(message['@odata.type']?.toLowerCase().includes('eventmessage') ? { isEventMessage: true } : {}),
     mentionsMe: mentionsIdentity(body, identity),
     ...(message.isRead !== undefined ? { isRead: message.isRead } : {}),
     ...(message.importance ? { importance: message.importance } : {}),
@@ -392,13 +410,14 @@ export function normalizeChatMessage(
   };
 }
 
-/** Detects "Masaaki さん" / "@Masaaki" style addressing in free text. */
+/** Detects "Masaaki さん" / "@Masaaki" / "曽我部様" style addressing in free text. */
 export function mentionsIdentity(text: string, identity: Identity): boolean {
   if (!text) return false;
   const haystack = text.toLowerCase();
   if (identity.addresses.some((address) => haystack.includes(address))) return true;
   const nameParts = identity.name.split(/\s+/).filter((part) => part.length >= 2);
-  return nameParts.some((part) => haystack.includes(part.toLowerCase()));
+  const candidates = [...nameParts, ...(identity.aliases ?? [])];
+  return candidates.some((part) => haystack.includes(part.toLowerCase()));
 }
 
 export function summariseEvent(event: GraphEvent): string {

@@ -182,6 +182,153 @@ describe('triage signals', () => {
     expect(decision.reason).toContain('見積書');
   });
 
+  it('skips mail that arrived through a distribution list', () => {
+    const [thread] = buildThreads([
+      message({
+        id: 'm1',
+        createdDateTime: '2026-09-19T06:00:00Z',
+        subject: '[CritSit Sev-A] Premier Queue Watching',
+        to: [{ name: 'Someone Else', address: 'other@contoso.com' }],
+        cc: [{ name: 'Japan CSA ALL', address: 'jgtscss@contoso.com' }],
+        isBroadcast: true,
+        body: '担当者 様へご連絡をお願いいたします。',
+      }),
+    ]);
+    const decision = triageThread(thread!, ME);
+    expect(decision.needsReply).toBe(false);
+    expect(decision.excludeReason).toBe('broadcast');
+  });
+
+  it('skips work that was handed to a named colleague', () => {
+    const [thread] = buildThreads([
+      message({
+        id: 'm1',
+        createdDateTime: '2026-09-19T06:00:00Z',
+        body: '本日担当の koheishingai さんに折り返し対応を依頼しました。担当者 様へご連絡をお願いいたします。',
+      }),
+    ]);
+    const decision = triageThread(thread!, ME);
+    expect(decision.needsReply).toBe(false);
+    expect(decision.excludeReason).toBe('delegated');
+  });
+
+  it('still flags a direct request addressed to me', () => {
+    const [thread] = buildThreads([
+      message({
+        id: 'm1',
+        createdDateTime: '2026-09-19T06:00:00Z',
+        body: '見積書の送付をお願いいたします。',
+      }),
+    ]);
+    expect(triageThread(thread!, ME).needsReply).toBe(true);
+  });
+
+  it('skips a CC-only request that is addressed to the To recipient', () => {
+    const [thread] = buildThreads([
+      message({
+        id: 'm1',
+        createdDateTime: '2026-09-19T06:00:00Z',
+        to: [{ name: 'Customer', address: 'customer@example.com' }],
+        cc: [{ name: 'Masaaki Sogabe', address: 'me@contoso.com' }],
+        isCcOnlyForMe: true,
+        body: '平野 隆幸 様 電子署名の書面をお送りしました。ご確認をお願いいたします。',
+      }),
+    ]);
+    const decision = triageThread(thread!, ME);
+    expect(decision.needsReply).toBe(false);
+    expect(decision.excludeReason).toBe('cc_only');
+  });
+
+  it('keeps a CC-only request when I am named in the body', () => {
+    const [thread] = buildThreads([
+      message({
+        id: 'm1',
+        createdDateTime: '2026-09-19T06:00:00Z',
+        to: [{ name: 'Customer', address: 'customer@example.com' }],
+        cc: [{ name: 'Masaaki Sogabe', address: 'me@contoso.com' }],
+        isCcOnlyForMe: true,
+        mentionsMe: true,
+        body: 'Sogabe さん、見積書のご確認をお願いします。',
+      }),
+    ]);
+    expect(triageThread(thread!, ME).needsReply).toBe(true);
+  });
+
+  it('ignores a marketing blast that greets me by name', () => {
+    const [thread] = buildThreads([
+      message({
+        id: 'm1',
+        createdDateTime: '2026-09-19T06:00:00Z',
+        from: { name: 'Saner Team | SecPod', address: 'team@marcom.secpod.com' },
+        subject: '[EXTERNAL] AI is finding vulnerabilities faster than teams can fix them',
+        mentionsMe: true,
+        isLowPriorityInbox: true,
+        body: 'Hi Masaaki, Attackers do not wait. Book a 30-minute demo.',
+      }),
+    ]);
+    const decision = triageThread(thread!, ME);
+    expect(decision.needsReply).toBe(false);
+    expect(decision.excludeReason).toBe('automated');
+  });
+
+  it('ignores a calendar follow notification', () => {
+    const [thread] = buildThreads([
+      message({
+        id: 'm1',
+        createdDateTime: '2026-09-19T06:00:00Z',
+        subject: 'フォローしています: 【Scout Radio #1】全社員向けLT会',
+        mentionsMe: true,
+        body: 'Masaaki Sogabe さんがこの会議をフォローしています 参加できませんが、関心があります。',
+      }),
+    ]);
+    const decision = triageThread(thread!, ME);
+    expect(decision.needsReply).toBe(false);
+    expect(decision.excludeReason).toBe('automated');
+  });
+
+  it('does not flag my own closing line as a request', () => {
+    const [thread] = buildThreads([
+      message({ id: 'm1', createdDateTime: '2026-09-19T01:00:00Z', body: 'Azure についてご相談があります。' }),
+      fromMe({
+        id: 'm2',
+        createdDateTime: '2026-09-19T05:00:00Z',
+        mentionsMe: true,
+        body: '江口様 資料をご送付します。ご質問などございましたら、なんなりとご連絡ください。 Masaaki Sogabe',
+      }),
+    ]);
+    const decision = triageThread(thread!, ME);
+    expect(decision.needsReply).toBe(false);
+    expect(decision.excludeReason).toBe('already_replied');
+  });
+
+  it('ignores a Teams meeting invitation delivered as mail', () => {
+    const [thread] = buildThreads([
+      message({
+        id: 'm1',
+        createdDateTime: '2026-09-19T06:00:00Z',
+        from: { name: 'Kaori Takeda', address: 'kaori@contoso.com' },
+        subject: '太陽建機レンタル様＠静岡＿AIDX',
+        body:
+          '________________________________________________________________________________ ' +
+          'Microsoft Teams 会議 参加する: https://teams.microsoft.com/meet/2785?p=OlQU8xvD 会議 ID: 278 593',
+      }),
+    ]);
+    const decision = triageThread(thread!, ME);
+    expect(decision.needsReply).toBe(false);
+    expect(decision.excludeReason).toBe('automated');
+  });
+
+  it('does not treat a URL query string as a question', () => {
+    const [thread] = buildThreads([
+      message({
+        id: 'm1',
+        createdDateTime: '2026-09-19T06:00:00Z',
+        body: '資料を共有します https://example.com/doc?p=abc123',
+      }),
+    ]);
+    expect(triageThread(thread!, ME).needsReply).toBe(false);
+  });
+
   it('ignores a reaction-only reply', () => {    const [thread] = buildThreads([
       fromMe({ id: 'm1', createdDateTime: '2026-09-19T01:00:00Z', body: '資料を送りました。' }),
       message({ id: 'm2', createdDateTime: '2026-09-19T02:00:00Z', body: '👍' }),

@@ -34,6 +34,7 @@ Options:
 Environment:
   HEY365_TIMEZONE          表示タイムゾーン（既定 Asia/Tokyo）
   HEY365_VIP               重要送信者のメールアドレス（カンマ区切り）
+  HEY365_MY_NAMES          自分の名前の別表記（カンマ区切り。例: 曽我部,Sogabe）
   HEY365_WORKIQ_COMMAND    Work IQ CLI の起動コマンドを上書きする
   HEY365_WORKIQ_ACCOUNT    使用するアカウント（複数アカウント時）
   HEY365_LOG_LEVEL         silent|error|warn|info|debug
