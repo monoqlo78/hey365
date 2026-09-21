@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { collapseDoubledAnswer, extractJsonDocuments } from '../src/services/workiq.js';
 import { redact } from '../src/utils/logger.js';
 import { detectLanguage, htmlToText, normalizeSubject, similarity, stripQuotedHistory } from '../src/utils/text.js';
-import { buildWindow, formatDateTime, formatTime } from '../src/utils/time.js';
+import { buildWindow, formatDateTime, formatTime, japaneseHolidays } from '../src/utils/time.js';
 import { classifyFailure } from '../src/utils/errors.js';
 import { mergeJson, mergeToml, renderConfig } from '../src/services/install.js';
 import { dedupeActionItems } from '../src/services/dedupe.js';
@@ -77,11 +77,39 @@ describe('text helpers', () => {
 });
 
 describe('time window', () => {
-  it('uses now minus N hours, not a calendar day', () => {
+  it('counts working time only, stepping over the weekend', () => {
+    // Sunday 19:00 JST — Sat/Sun are skipped, so 36h reaches back into Thursday.
     const now = new Date('2026-09-20T10:00:00Z');
-    const window = buildWindow(36, now);
-    expect(window.startIso).toBe('2026-09-18T22:00:00.000Z');
+    const window = buildWindow(36, now, 'Asia/Tokyo');
+    expect(window.startIso).toBe('2026-09-17T03:00:00.000Z');
     expect(window.endIso).toBe('2026-09-20T10:00:00.000Z');
+    expect(window.skippedDays).toEqual(['2026-09-20', '2026-09-19']);
+  });
+
+  it('steps over Japanese public holidays', () => {
+    // Wed 2026-09-23 is 秋分の日, Mon 09-21 敬老の日, Tue 09-22 国民の休日.
+    const holidays = japaneseHolidays(2026);
+    expect(holidays.has('2026-09-21')).toBe(true);
+    expect(holidays.has('2026-09-22')).toBe(true);
+    expect(holidays.has('2026-09-23')).toBe(true);
+    expect(holidays.has('2026-03-20')).toBe(true);
+
+    const now = new Date('2026-09-21T01:00:00Z'); // Mon 10:00 JST, a holiday
+    const window = buildWindow(36, now, 'Asia/Tokyo');
+    // Mon holiday + Sun + Sat skipped -> 24h of Friday + 12h of Thursday.
+    expect(window.startIso).toBe('2026-09-17T03:00:00.000Z');
+    expect(window.skippedDays).toEqual(['2026-09-21', '2026-09-20', '2026-09-19']);
+  });
+
+  it('falls back to a plain range when business days are disabled', () => {
+    process.env.HEY365_BUSINESS_DAYS = 'off';
+    try {
+      const window = buildWindow(36, new Date('2026-09-20T10:00:00Z'), 'Asia/Tokyo');
+      expect(window.startIso).toBe('2026-09-18T22:00:00.000Z');
+      expect(window.skippedDays).toEqual([]);
+    } finally {
+      delete process.env.HEY365_BUSINESS_DAYS;
+    }
   });
 
   it('falls back to 36 hours for invalid input', () => {

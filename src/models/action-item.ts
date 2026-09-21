@@ -69,6 +69,8 @@ export interface TriageResult {
   windowHours: number;
   windowStart: string;
   windowEnd: string;
+  /** Weekends/holidays the window stepped over, as `YYYY-MM-DD`. */
+  skippedDays?: string[];
   timezone: string;
   me: Participant;
   items: ActionItem[];

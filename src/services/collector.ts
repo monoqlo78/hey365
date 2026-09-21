@@ -252,6 +252,7 @@ export async function runTriage(options: TriageRunOptions): Promise<TriageResult
     windowHours: context.window.hours,
     windowStart: context.window.startIso,
     windowEnd: context.window.endIso,
+    skippedDays: context.window.skippedDays,
     timezone: timezone(),
     me: { name: context.identity.name, address: context.identity.addresses[0] ?? '', id: context.identity.id },
     items,

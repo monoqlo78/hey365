@@ -35,6 +35,9 @@ Environment:
   HEY365_TIMEZONE          表示タイムゾーン（既定 Asia/Tokyo）
   HEY365_VIP               重要送信者のメールアドレス（カンマ区切り）
   HEY365_MY_NAMES          自分の名前の別表記（カンマ区切り。例: 曽我部,Sogabe）
+  HEY365_BUSINESS_DAYS     off で営業日換算を無効化（既定 on）
+  HEY365_HOLIDAY_CALENDAR  jp | none（既定: Asia/Tokyo なら jp）
+  HEY365_HOLIDAYS          追加の非稼働日（YYYY-MM-DD のカンマ区切り）
   HEY365_WORKIQ_COMMAND    Work IQ CLI の起動コマンドを上書きする
   HEY365_WORKIQ_ACCOUNT    使用するアカウント（複数アカウント時）
   HEY365_LOG_LEVEL         silent|error|warn|info|debug

@@ -17,13 +17,26 @@ const SOURCE_LABEL: Record<ActionItem['source'], string> = {
 
 const DIVIDER = '------------------------------------------------';
 
+/**
+ * "過去36時間" is counted in working time, so say where the window actually
+ * reaches back to whenever a weekend or holiday was stepped over.
+ */
+function describeWindow(result: TriageResult): string {
+  const base = `過去${result.windowHours}時間`;
+  const skipped = result.skippedDays ?? [];
+  if (skipped.length === 0) return `${base}で`;
+  const from = formatDateTime(result.windowStart, result.timezone);
+  return `${base}（営業日換算: ${from} 以降、土日祝 ${skipped.length}日を除く）で`;
+}
+
 /** Renders the triage result exactly in the shape described by spec §8. */
 export function formatTriage(result: TriageResult): string {
   const lines: string[] = ['Hey365 チェック完了', ''];
+  const window = describeWindow(result);
 
   if (result.items.length === 0) {
     lines.push(
-      `過去${result.windowHours}時間で、あなたの対応が必要そうなものは見つかりませんでした。`,
+      `${window}、あなたの対応が必要そうなものは見つかりませんでした。`,
       '',
       `スキャン: メール ${result.scanned.outlookMessages}件 / Teams ${result.scanned.teamsMessages}件 / 会議 ${result.scanned.meetings}件`,
       `除外: 返信済み ${result.skipped.alreadyReplied} / 自動通知 ${result.skipped.automated} / CCのみ ${result.skipped.ccOnly} / FYI ${result.skipped.fyi}`,
@@ -32,7 +45,7 @@ export function formatTriage(result: TriageResult): string {
     return lines.join('\n');
   }
 
-  lines.push(`過去${result.windowHours}時間で、あなたの対応が必要と思われるものが ${result.items.length}件あります。`, '');
+  lines.push(`${window}、あなたの対応が必要と思われるものが ${result.items.length}件あります。`, '');
 
   result.items.forEach((item, position) => {
     lines.push(...formatItem(item, result.timezone));

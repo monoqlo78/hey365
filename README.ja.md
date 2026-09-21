@@ -195,6 +195,9 @@ node dist/index.js health --deep
 | `HEY365_TIMEZONE` | `Asia/Tokyo` | 表示タイムゾーン |
 | `HEY365_VIP` | – | 重要送信者のアドレス（カンマ区切り）。重要度を加点 |
 | `HEY365_MY_NAMES` | – | 自分の名前の別表記（例: `曽我部,Sogabe`）。本文で名指しされたかの判定に使用 |
+| `HEY365_BUSINESS_DAYS` | `on` | `off` にすると営業日換算をやめ、単純な実時間で遡る |
+| `HEY365_HOLIDAY_CALENDAR` | 自動 | `jp` で日本の祝日カレンダーを強制、`none` で無効化。タイムゾーンが `Asia/Tokyo` なら既定で `jp` |
+| `HEY365_HOLIDAYS` | – | 追加の非稼働日を `YYYY-MM-DD` のカンマ区切りで指定（全社休業日・自分の休暇など） |
 | `HEY365_WORKIQ_COMMAND` | 自動 | Work IQ CLI の起動方法を上書き |
 | `HEY365_WORKIQ_ACCOUNT` | – | 複数アカウント時に使用するアカウント |
 | `HEY365_WORKIQ_TIMEOUT_MS` | `120000` | 1回あたりのタイムアウト |

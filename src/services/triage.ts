@@ -1,6 +1,7 @@
 import type { ActionItem, Importance, TriageSignal } from '../models/action-item.js';
 import type { ConversationThread, NormalizedMessage } from '../models/conversation.js';
 import type { Identity } from './graph.js';
+import { mentionsIdentity } from './graph.js';
 import { hasAnsweredLatestInbound, unansweredInbound } from './conversation.js';
 import { shortHash, stripEmphasis, truncate } from '../utils/text.js';
 
@@ -123,6 +124,23 @@ function stripUrls(text: string): string {
   return text.replace(/https?:\/\/\S+/gi, ' ');
 }
 
+/** Opening salutation: "Hi Jaganathan,", "Dear Sato", "山田さん、", "平野 様". */
+const SALUTATION_EN = /^\s*(?:hi|hello|hey|dear)\s+([\p{L}][\p{L}'’.-]*(?:\s+[\p{L}][\p{L}'’.-]*)?)\s*[,，、:：!！\n]/iu;
+const SALUTATION_JA = /^\s*([\p{L}\p{N}]{1,12}(?:\s*[\p{L}\p{N}]{1,12})?)\s*(?:さん|さま|様|先生)\s*[,，、:：\n]/u;
+
+/**
+ * A message that opens by greeting somebody else ("Hi Jaganathan,") is that
+ * person's to-do, even when it lands in a channel I follow.
+ */
+export function addressedToSomeoneElse(body: string, identity: Identity): boolean {
+  const opening = body.trimStart().split(/\n/).slice(0, 2).join('\n');
+  const match = SALUTATION_EN.exec(opening) ?? SALUTATION_JA.exec(opening);
+  const named = match?.[1]?.trim();
+  if (!named) return false;
+  if (/^(all|team|everyone|folks|there|皆|みな|みんな|みなさん|皆さん|皆様|各位|関係者|全員)$/i.test(named)) return false;
+  return !mentionsIdentity(named, identity);
+}
+
 /** "本日担当の〇〇さんに折り返し対応を依頼しました" — somebody else owns it. */
 const DELEGATED_TO_OTHERS =
   /(担当の\s*\S{2,20}?\s*さん(に|へ).{0,16}(依頼|お願い)(し|いたし)ました|\S{2,20}さん(に|へ)(対応|折り返し|確認)を(依頼|お願い)(し|いたし)ました|assigned (this|it|the case) to \w+|handed (this|it) (over )?to \w+)/;
@@ -182,6 +200,11 @@ export function triageThread(thread: ConversationThread, identity: Identity, opt
 
   // A bot @-mentioning someone else is that person's task, not mine.
   if (latest.mentionsOthers && !latest.mentionsMe) {
+    return decision(false, false, 'cc_only', [], 0, thread);
+  }
+
+  // "Hi Jaganathan, just following up…" — greeted by name, and it is not me.
+  if (!latest.mentionsMe && addressedToSomeoneElse(latest.body, identity)) {
     return decision(false, false, 'cc_only', [], 0, thread);
   }
 

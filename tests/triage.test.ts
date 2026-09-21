@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { buildThreads, hasAnsweredLatestInbound, unansweredInbound } from '../src/services/conversation.js';
-import { triageThread } from '../src/services/triage.js';
+import { addressedToSomeoneElse, triageThread } from '../src/services/triage.js';
 import type { NormalizedMessage } from '../src/models/conversation.js';
 import type { Identity } from '../src/services/graph.js';
 
@@ -327,6 +327,46 @@ describe('triage signals', () => {
       }),
     ]);
     expect(triageThread(thread!, ME).needsReply).toBe(false);
+  });
+
+  it('skips a follow-up that greets somebody else by name', () => {
+    const [thread] = buildThreads([
+      message({
+        id: 'm1',
+        createdDateTime: '2026-09-19T06:00:00Z',
+        source: 'teams-channel',
+        from: { name: 'Sithu Kaung Set', address: 'sithu@contoso.com' },
+        body: 'Hi Jaganathan, Just wanted to kindly follow up on the findings. Could you confirm?',
+        routing: { kind: 'teams-channel', teamId: 't', channelId: 'c', rootMessageId: 'm1' },
+      }),
+    ]);
+    const decision = triageThread(thread!, ME);
+    expect(decision.needsReply).toBe(false);
+    expect(decision.excludeReason).toBe('cc_only');
+  });
+
+  it('keeps a request that greets me by name', () => {
+    const [thread] = buildThreads([
+      message({
+        id: 'm1',
+        createdDateTime: '2026-09-19T06:00:00Z',
+        body: 'Hi Masaaki, could you confirm the findings?',
+        mentionsMe: true,
+      }),
+    ]);
+    expect(triageThread(thread!, ME).needsReply).toBe(true);
+  });
+
+  it('keeps a request addressed to the whole channel', () => {
+    const [thread] = buildThreads([
+      message({
+        id: 'm1',
+        createdDateTime: '2026-09-19T06:00:00Z',
+        body: '皆さん、構成レビューのご確認をお願いいたします。',
+      }),
+    ]);
+    expect(addressedToSomeoneElse('皆さん、確認をお願いします。', ME)).toBe(false);
+    expect(triageThread(thread!, ME).needsReply).toBe(true);
   });
 
   it('ignores a reaction-only reply', () => {    const [thread] = buildThreads([
