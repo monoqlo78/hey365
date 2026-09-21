@@ -33,24 +33,19 @@ export interface TimeWindow {
  * Business calendar                                                   *
  * ------------------------------------------------------------------ */
 
+/**
+ * UTC offset of a zone at an instant, read from the formatted zone name
+ * ("GMT+09:00"). Deriving it from a formatted wall clock instead is unsafe:
+ * ICU renders midnight as either `00` or `24` depending on the build.
+ */
 function tzOffsetMs(instant: number, tz: string): number {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: tz,
-    hour12: false,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  }).formatToParts(new Date(instant));
-  const get = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? '0');
-  // Some ICU builds render midnight as hour 24 of the previous date; Date.UTC
-  // rolls that over correctly, so the value must not be wrapped with `% 24`.
-  const wall = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second'));
-  // The formatter drops milliseconds, so round to the minute — every real UTC
-  // offset is a whole number of minutes.
-  return Math.round((wall - instant) / 60_000) * 60_000;
+  const name = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'longOffset' })
+    .formatToParts(new Date(instant))
+    .find((part) => part.type === 'timeZoneName')?.value;
+  const match = /GMT([+-])(\d{2}):?(\d{2})?/.exec(name ?? '');
+  if (!match) return 0; // Plain "GMT" means UTC.
+  const sign = match[1] === '-' ? -1 : 1;
+  return sign * (Number(match[2]) * 3600_000 + Number(match[3] ?? 0) * 60_000);
 }
 
 interface CalendarDay {
@@ -69,6 +64,7 @@ function calendarDay(instant: number, tz: string): CalendarDay {
   const month = local.getUTCMonth() + 1;
   const day = local.getUTCDate();
   const midnightLocal = Date.UTC(year, month - 1, day);
+  // Re-read the offset at the boundary itself so DST transitions land right.
   const startsAt = midnightLocal - tzOffsetMs(midnightLocal - offset, tz);
   return { year, month, day, weekday: local.getUTCDay(), startsAt };
 }
