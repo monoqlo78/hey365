@@ -213,6 +213,13 @@ export function triageThread(thread: ConversationThread, identity: Identity, opt
     return decision(false, false, 'broadcast', [], 0, thread);
   }
 
+  // A channel post is a broadcast by default. It becomes my task only when I am
+  // @-mentioned or have already taken part in the thread; otherwise I am a
+  // bystander watching two other people arrange something between themselves.
+  if (thread.source === 'teams-channel' && !latest.mentionsMe && !thread.lastOutboundMessage) {
+    return decision(false, false, 'broadcast', [], 0, thread);
+  }
+
   const combinedText = pending.map((message) => `${message.subject}\n${message.body}`).join('\n');
   const latestText = `${latest.subject}\n${latest.body}`;
 

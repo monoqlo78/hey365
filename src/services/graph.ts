@@ -200,25 +200,35 @@ interface SearchResponse {
  * coverage (1:1 chats, group chats and channel posts) goes through the
  * Microsoft Search API instead.
  */
-export async function searchTeamsMessages(since: Date, size = 50): Promise<GraphChatMessage[]> {
-  const body = {
-    requests: [
-      {
-        entityTypes: ['chatMessage'],
-        query: { queryString: `sent>=${toKqlDate(since)}` },
-        from: 0,
-        size: Math.min(size, 100),
-      },
-    ],
-  };
-  const response = await doAction<SearchResponse>('/search/query', body);
-  const hits = response?.value?.flatMap((entry) => entry.hitsContainers?.flatMap((c) => c.hits ?? []) ?? []) ?? [];
+export async function searchTeamsMessages(since: Date, size = 300): Promise<GraphChatMessage[]> {
+  // The Search API caps a single request at 100 hits and silently drops the
+  // rest, so a wider window needs paging or the oldest messages disappear.
+  const pageSize = 100;
   const messages: GraphChatMessage[] = [];
-  for (const hit of hits) {
-    const resource = hit.resource;
-    if (!resource?.id) continue;
-    // The search index returns a trimmed body; keep the summary as fallback.
-    messages.push({ ...resource, summary: resource.summary ?? hit.summary ?? null });
+  const seen = new Set<string>();
+  for (let from = 0; from < size; from += pageSize) {
+    const body = {
+      requests: [
+        {
+          entityTypes: ['chatMessage'],
+          query: { queryString: `sent>=${toKqlDate(since)}` },
+          from,
+          size: Math.min(pageSize, size - from),
+        },
+      ],
+    };
+    const response = await doAction<SearchResponse>('/search/query', body);
+    const containers = response?.value?.flatMap((entry) => entry.hitsContainers ?? []) ?? [];
+    const hits = containers.flatMap((container) => container.hits ?? []);
+    for (const hit of hits) {
+      const resource = hit.resource;
+      if (!resource?.id || seen.has(resource.id)) continue;
+      seen.add(resource.id);
+      // The search index returns a trimmed body; keep the summary as fallback.
+      messages.push({ ...resource, summary: resource.summary ?? hit.summary ?? null });
+    }
+    if (hits.length === 0) break;
+    if (!containers.some((container) => container.moreResultsAvailable === true)) break;
   }
   return messages;
 }

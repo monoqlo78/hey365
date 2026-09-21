@@ -369,6 +369,50 @@ describe('triage signals', () => {
     expect(triageThread(thread!, ME).needsReply).toBe(true);
   });
 
+  it('ignores a channel thread between two other people when I never joined it', () => {
+    const channel = {
+      source: 'teams-channel' as const,
+      routing: { kind: 'teams-channel' as const, teamId: 't', channelId: 'c', rootMessageId: 'm1' },
+    };
+    const [thread] = buildThreads([
+      message({
+        ...channel,
+        id: 'm1',
+        createdDateTime: '2026-09-19T06:00:00Z',
+        from: { name: 'Sasai', address: 'sasai@contoso.com' },
+        body: '候補枠にて、お客様のご予定を確認してみます。',
+      }),
+      message({
+        ...channel,
+        id: 'm2',
+        createdDateTime: '2026-09-19T07:00:00Z',
+        from: { name: 'Hirano', address: 'hirano@contoso.com' },
+        body: '承知しました。調整頂けましたら会議リンクの送付をお願いいたします！',
+      }),
+    ]);
+    const decision = triageThread(thread!, ME);
+    expect(decision.needsReply).toBe(false);
+    expect(decision.excludeReason).toBe('broadcast');
+  });
+
+  it('keeps a channel request once I have posted in that thread', () => {
+    const channel = {
+      source: 'teams-channel' as const,
+      routing: { kind: 'teams-channel' as const, teamId: 't', channelId: 'c', rootMessageId: 'm1' },
+    };
+    const [thread] = buildThreads([
+      fromMe({ ...channel, id: 'm1', createdDateTime: '2026-09-19T06:00:00Z', body: '候補日を出します。' }),
+      message({
+        ...channel,
+        id: 'm2',
+        createdDateTime: '2026-09-19T07:00:00Z',
+        from: { name: 'Hirano', address: 'hirano@contoso.com' },
+        body: '承知しました。調整頂けましたら会議リンクの送付をお願いいたします！',
+      }),
+    ]);
+    expect(triageThread(thread!, ME).needsReply).toBe(true);
+  });
+
   it('ignores a reaction-only reply', () => {    const [thread] = buildThreads([
       fromMe({ id: 'm1', createdDateTime: '2026-09-19T01:00:00Z', body: '資料を送りました。' }),
       message({ id: 'm2', createdDateTime: '2026-09-19T02:00:00Z', body: '👍' }),
