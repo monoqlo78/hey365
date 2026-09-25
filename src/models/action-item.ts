@@ -47,6 +47,10 @@ export interface ActionItem {
   excerpt: string;
   language: Language;
   webLink?: string;
+  /** Business days since the message arrived; 0 means it arrived today. */
+  ageBusinessDays?: number;
+  /** Set when the item has gone unanswered past the stale threshold. */
+  stale?: boolean;
   routing: ReplyRouting;
   /** Other conversations merged into this item by the de-duplication pass. */
   mergedFrom?: Array<{ source: SourceKind; conversationId: string; subject: string }>;
@@ -71,6 +75,10 @@ export interface TriageResult {
   windowEnd: string;
   /** Weekends/holidays the window stepped over, as `YYYY-MM-DD`. */
   skippedDays?: string[];
+  /** Set when the window was requested as a count of business days. */
+  windowBusinessDays?: number;
+  /** Set when the check was run against a past reference point instead of now. */
+  windowAsOf?: string;
   timezone: string;
   me: Participant;
   items: ActionItem[];
@@ -86,6 +94,8 @@ export interface TriageResult {
     ccOnly: number;
     fyi: number;
     noSignal: number;
+    /** Snoozed or marked done by the user. */
+    muted?: number;
   };
   warnings: string[];
 }

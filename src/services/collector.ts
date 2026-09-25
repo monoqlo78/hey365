@@ -17,13 +17,18 @@ import {
   type GraphEvent,
   type Identity,
 } from './graph.js';
-import { toActionItem, triageThread, type TriageDecision } from './triage.js';
+import { toActionItem, triageThread, staleAfterDays, type TriageDecision } from './triage.js';
+import { findMute } from './store.js';
 import { logger } from '../utils/logger.js';
 import { Hey365Error, asHey365Error } from '../utils/errors.js';
-import { buildWindow, isWithin, timezone, type TimeWindow } from '../utils/time.js';
+import { businessDaysBetween, isWithin, resolveWindow, timezone, type TimeWindow } from '../utils/time.js';
 
 export interface CollectOptions {
-  hours: number;
+  hours?: number;
+  /** Whole business days to reach back, counting the reference day. */
+  businessDays?: number;
+  /** Reference point the window ends at (`YYYY-MM-DD` or ISO). Defaults to now. */
+  asOf?: string;
   /** Cap on Teams conversations expanded with a full thread read. */
   maxTeamsThreads?: number;
   includeTeams?: boolean;
@@ -53,7 +58,12 @@ function vipAddresses(): string[] {
  * chat/channel threads and calendar events.
  */
 export async function collect(options: CollectOptions): Promise<CollectedContext> {
-  const window = buildWindow(options.hours, options.now);
+  const window = resolveWindow({
+    ...(options.hours !== undefined ? { hours: options.hours } : {}),
+    ...(options.businessDays !== undefined ? { businessDays: options.businessDays } : {}),
+    ...(options.asOf !== undefined ? { asOf: options.asOf } : {}),
+    ...(options.now !== undefined ? { now: options.now } : {}),
+  });
   const warnings: string[] = [];
 
   const me = await getMe();
@@ -199,19 +209,34 @@ async function expandTeamsThreads(
 export interface TriageRunOptions extends CollectOptions {
   /** Include low-confidence items that fell below the needsReply threshold. */
   includeLowConfidence?: boolean;
+  /** Show items the user snoozed or marked done. */
+  includeMuted?: boolean;
   limit?: number;
 }
 
 export async function runTriage(options: TriageRunOptions): Promise<TriageResult> {
   const context = await collect(options);
-  const vip = vipAddresses();
+  return triageCollected(context, options);
+}
 
-  const skipped = { alreadyReplied: 0, automated: 0, ccOnly: 0, fyi: 0, noSignal: 0 };
+/** Triage over an already gathered context, so callers can reuse one fetch. */
+export function triageCollected(context: CollectedContext, options: TriageRunOptions = {}): TriageResult {
+  const vip = vipAddresses();
+  // Age is measured against the window's reference point, so a dated run reads
+  // the same as it would have on the day itself.
+  const now = context.window.end;
+
+  const skipped = { alreadyReplied: 0, automated: 0, ccOnly: 0, fyi: 0, noSignal: 0, muted: 0 };
   const candidates: Array<{ thread: ConversationThread; decision: TriageDecision }> = [];
 
   for (const thread of context.threads) {
     const decision = triageThread(thread, context.identity, { vipAddresses: vip });
     if (decision.needsReply || (options.includeLowConfidence && decision.score > 0)) {
+      // Snoozed or already handled by hand, and nothing newer has arrived.
+      if (!options.includeMuted && findMute(thread.conversationId, thread.lastMessage.createdDateTime, now)) {
+        skipped.muted += 1;
+        continue;
+      }
       candidates.push({ thread, decision });
       continue;
     }
@@ -237,14 +262,26 @@ export async function runTriage(options: TriageRunOptions): Promise<TriageResult
     }
   }
 
+  // Something that has sat unanswered for days outranks a fresher, higher
+  // scoring message: the backlog is the thing the user cannot see for himself.
+  const ageOf = (thread: ConversationThread) => {
+    const latest = thread.lastInboundMessage ?? thread.lastMessage;
+    const arrived = new Date(latest.createdDateTime);
+    return Number.isNaN(arrived.getTime()) ? 0 : businessDaysBetween(arrived, now);
+  };
+  const threshold = staleAfterDays();
+
   candidates.sort((a, b) => {
+    const staleA = ageOf(a.thread) >= threshold ? 1 : 0;
+    const staleB = ageOf(b.thread) >= threshold ? 1 : 0;
+    if (staleA !== staleB) return staleB - staleA;
     if (b.decision.score !== a.decision.score) return b.decision.score - a.decision.score;
     return new Date(b.thread.lastMessage.createdDateTime).getTime() - new Date(a.thread.lastMessage.createdDateTime).getTime();
   });
 
   const limited = candidates.slice(0, options.limit ?? 25);
   const items: ActionItem[] = dedupeActionItems(
-    limited.map((candidate, position) => toActionItem(candidate.thread, candidate.decision, position + 1)),
+    limited.map((candidate, position) => toActionItem(candidate.thread, candidate.decision, position + 1, now)),
   ).map((item, position) => ({ ...item, index: position + 1 }));
 
   return {
@@ -253,6 +290,8 @@ export async function runTriage(options: TriageRunOptions): Promise<TriageResult
     windowStart: context.window.startIso,
     windowEnd: context.window.endIso,
     skippedDays: context.window.skippedDays,
+    ...(context.window.businessDays !== undefined ? { windowBusinessDays: context.window.businessDays } : {}),
+    ...(context.window.asOf !== undefined ? { windowAsOf: context.window.asOf } : {}),
     timezone: timezone(),
     me: { name: context.identity.name, address: context.identity.addresses[0] ?? '', id: context.identity.id },
     items,

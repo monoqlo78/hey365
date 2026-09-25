@@ -16,6 +16,8 @@ export type Hey365ErrorCode =
   | 'SEND_FAILED'
   | 'DRAFT_NOT_FOUND'
   | 'DRAFT_MISMATCH'
+  | 'INVALID_INPUT'
+  | 'SCHEDULE_FAILED'
   | 'INTERNAL_ERROR';
 
 const NEXT_STEPS: Record<Hey365ErrorCode, { ja: string; en: string }> = {
@@ -66,6 +68,14 @@ const NEXT_STEPS: Record<Hey365ErrorCode, { ja: string; en: string }> = {
   DRAFT_MISMATCH: {
     ja: '返信案が更新されています。内容を確認してから送信してください。',
     en: 'The draft changed since it was shown. Review it again before sending.',
+  },
+  INVALID_INPUT: {
+    ja: '指定された値を解釈できませんでした。日付は `YYYY-MM-DD` 形式で指定してください。',
+    en: 'That value could not be interpreted. Dates must be given as `YYYY-MM-DD`.',
+  },
+  SCHEDULE_FAILED: {
+    ja: '定期実行の登録に失敗しました。管理者権限で実行しているか、表示されたコマンドを手動で実行できるか確認してください。',
+    en: 'Could not register the scheduled run. Check your permissions, or run the printed command manually.',
   },
   INTERNAL_ERROR: {
     ja: 'Hey365 の内部エラーです。`hey365_health` で状態を確認してください。',

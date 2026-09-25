@@ -4,6 +4,7 @@ import type { Identity } from './graph.js';
 import { mentionsIdentity } from './graph.js';
 import { hasAnsweredLatestInbound, unansweredInbound } from './conversation.js';
 import { shortHash, stripEmphasis, truncate } from '../utils/text.js';
+import { businessDaysBetween } from '../utils/time.js';
 
 /* ------------------------------------------------------------------ *
  * Signal dictionaries                                                 *
@@ -90,7 +91,15 @@ const DEADLINE_PATTERNS: Array<{ regex: RegExp; label: string }> = [
   { regex: /締切|期限|deadline|due date/i, label: '締切あり' },
 ];
 
-const AUTOMATED_SENDER = /(no-?reply|do-?not-?reply|donotreply|notifications?@|noreply@|mailer-daemon|postmaster|automated|alerts?@|newsletter|bounce)/i;
+const AUTOMATED_SENDER = /(no[-\s]?reply|do[-\s]?not[-\s]?reply|donotreply|notifications?@|noreply@|mailer-daemon|postmaster|automated|alerts?@|newsletter|bounce)/i;
+
+/**
+ * Display names that only a system uses: "Contoso Alerting Engine",
+ * "Build Notification Service". Applied to the name alone, never to a body,
+ * so a human writing about an alerting engine is not filtered out.
+ */
+const AUTOMATED_SENDER_NAME =
+  /(alert(ing)?\s+engine|notification\s+(service|centre|center|system)|automated?\s+(alerts?|notifications?|reports?)|\bdaemon\b|\bwebhook\b)/i;
 
 /** Bulk/marketing senders: `team@marcom.example.com`, `info@`, `campaign@`… */
 const MARKETING_SENDER = /(@|\.)(marcom|marketing|mailing|campaign|mktg|email|em|news|info)\.|^(marketing|campaigns?|webinars?|events?|sales|info|hello|contact)@/i;
@@ -392,6 +401,7 @@ export function detectDeadline(text: string): { label: string; urgent: boolean }
 function isAutomated(message: NormalizedMessage): boolean {
   if (AUTOMATED_SENDER.test(message.from.address ?? '')) return true;
   if (AUTOMATED_SENDER.test(message.from.name)) return true;
+  if (AUTOMATED_SENDER_NAME.test(message.from.name)) return true;
   if (MARKETING_SENDER.test(message.from.address ?? '')) return true;
   if (isBotSender(message.from.name)) return true;
   if (AUTOMATED_BODY.test(message.body)) return true;
@@ -427,13 +437,27 @@ function extractSentence(text: string, index: number): string {
   return truncate(stripEmphasis(text.slice(start, end + 1)), 140);
 }
 
+/**
+ * Business days a thread may sit unanswered before it is called out. Replying
+ * within the same or next working day is normal; past this it is a backlog.
+ */
+export function staleAfterDays(): number {
+  const raw = Number(process.env.HEY365_STALE_AFTER_DAYS);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 3;
+}
+
 /** Builds the user-facing action item from a thread and its triage decision. */
 export function toActionItem(
   thread: ConversationThread,
   decisionResult: TriageDecision,
   index: number,
+  now: Date = new Date(),
 ): ActionItem {
   const latest = thread.lastInboundMessage ?? thread.lastMessage;
+  const arrived = new Date(latest.createdDateTime);
+  const age = Number.isNaN(arrived.getTime()) ? 0 : businessDaysBetween(arrived, now);
+  const stale = age >= staleAfterDays();
+
   const item: ActionItem = {
     index,
     id: shortHash(`${thread.source}:${thread.conversationId}:${latest.id}`),
@@ -445,7 +469,8 @@ export function toActionItem(
     lastMessageTime: latest.createdDateTime,
     needsReply: decisionResult.needsReply,
     alreadyReplied: decisionResult.alreadyReplied,
-    importance: decisionResult.importance,
+    // Something left hanging for days outranks whatever the text scored.
+    importance: stale ? 'high' : decisionResult.importance,
     score: decisionResult.score,
     reason: decisionResult.reason,
     reasonEn: decisionResult.reasonEn,
@@ -454,6 +479,8 @@ export function toActionItem(
     excerpt: truncate(stripEmphasis(latest.body), 600),
     language: thread.language,
     routing: latest.routing,
+    ageBusinessDays: age,
+    ...(stale ? { stale: true } : {}),
   };
   if (decisionResult.deadlineText) item.deadlineText = decisionResult.deadlineText;
   if (thread.webLink) item.webLink = thread.webLink;

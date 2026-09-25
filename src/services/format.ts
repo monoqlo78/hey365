@@ -1,5 +1,7 @@
 import type { ActionItem, TriageResult } from '../models/action-item.js';
 import type { SessionSummary } from '../models/session.js';
+import type { DigestResult } from './digest.js';
+import type { FindResult } from './find.js';
 import { formatDateTime, formatTime, relativeLabel } from '../utils/time.js';
 
 const MARKERS: Record<ActionItem['importance'], string> = {
@@ -19,13 +21,23 @@ const DIVIDER = '------------------------------------------------';
 
 /**
  * "過去36時間" is counted in working time, so say where the window actually
- * reaches back to whenever a weekend or holiday was stepped over.
+ * reaches back to whenever a weekend or holiday was stepped over. A business-day
+ * window or a past reference point always names its exact range, because the
+ * caller cannot infer it from the label alone.
  */
 function describeWindow(result: TriageResult): string {
-  const base = `過去${result.windowHours}時間`;
-  const skipped = result.skippedDays ?? [];
-  if (skipped.length === 0) return `${base}で`;
   const from = formatDateTime(result.windowStart, result.timezone);
+  const to = formatDateTime(result.windowEnd, result.timezone);
+  const skipped = result.skippedDays ?? [];
+
+  if (result.windowBusinessDays) {
+    const holidays = skipped.length > 0 ? `、土日祝 ${skipped.length}日を除く` : '';
+    return `過去${result.windowBusinessDays}営業日（${from} 〜 ${to}${holidays}）で`;
+  }
+
+  const base = `過去${result.windowHours}時間`;
+  if (result.windowAsOf) return `${base}（${from} 〜 ${to}）で`;
+  if (skipped.length === 0) return `${base}で`;
   return `${base}（営業日換算: ${from} 以降、土日祝 ${skipped.length}日を除く）で`;
 }
 
@@ -79,6 +91,9 @@ function formatItem(item: ActionItem, tz: string): string[] {
   const relative = relativeLabel(item.lastMessageTime);
   lines.push(`${MARKERS[item.importance]} ${item.index}. ${item.sender.name} / ${SOURCE_LABEL[item.source]}`);
   lines.push(`${time}（${relative}）`);
+  if (item.stale) {
+    lines.push(`⏰ ${item.ageBusinessDays}営業日おきっぱなしです。`);
+  }
   lines.push('');
   lines.push('内容:');
   const subject = item.subject?.trim() ?? '';
@@ -130,6 +145,88 @@ function isSameText(a: string, b: string): boolean {
 function appendWarnings(lines: string[], warnings: string[]): void {  if (warnings.length === 0) return;
   lines.push('', DIVIDER, '', '注意:');
   for (const warning of warnings) lines.push(`- ${warning}`);
+}
+
+/** Renders the morning digest: meetings, deadlines and outstanding replies. */
+export function formatDigest(digest: DigestResult): string {
+  const tz = digest.timezone;
+  const lines: string[] = [`Hey365 デイリーダイジェスト（${digest.date}）`, ''];
+
+  lines.push('■ 今日の会議', '');
+  if (digest.meetings.length === 0) {
+    lines.push('予定なし');
+  } else {
+    for (const meeting of digest.meetings) {
+      const span = meeting.end ? `${formatTime(meeting.start, tz)}-${formatTime(meeting.end, tz)}` : formatTime(meeting.start, tz);
+      const flags: string[] = [];
+      if (meeting.needsResponse) flags.push('未返答');
+      if (meeting.joinUrl) flags.push('オンライン');
+      const suffix = flags.length > 0 ? `  [${flags.join(' / ')}]` : '';
+      lines.push(`${span}  ${meeting.subject}${suffix}`);
+      if (meeting.organizer) lines.push(`        主催: ${meeting.organizer}`);
+    }
+  }
+  lines.push('');
+
+  lines.push('■ 期限が来ているもの', '');
+  if (digest.dueToday.length === 0) {
+    lines.push('なし');
+  } else {
+    for (const item of digest.dueToday) {
+      lines.push(`${item.index}. ${item.sender.name} / ${item.subject || item.summary}`);
+      if (item.deadlineText) lines.push(`   期限: ${item.deadlineText}`);
+    }
+  }
+  lines.push('');
+
+  lines.push('■ 放置中', '');
+  if (digest.stale.length === 0) {
+    lines.push('なし');
+  } else {
+    for (const item of digest.stale) {
+      lines.push(`${item.index}. ${item.sender.name} / ${item.subject || item.summary}（${item.ageBusinessDays}営業日）`);
+    }
+  }
+  lines.push('');
+
+  lines.push('■ 未返信', '');
+  if (digest.triage.items.length === 0) {
+    lines.push('なし');
+  } else {
+    for (const item of digest.triage.items) {
+      lines.push(
+        `${MARKERS[item.importance]} ${item.index}. ${item.sender.name} / ${SOURCE_LABEL[item.source]} — ${item.subject || item.summary}`,
+      );
+    }
+    lines.push('', '詳細や返信案が必要なら「hey365」と声をかけてください。');
+  }
+
+  appendWarnings(lines, digest.triage.warnings);
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/** Renders a keyword search across Outlook and Teams. */
+export function formatFind(result: FindResult): string {
+  const tz = result.timezone;
+  if (result.matches.length === 0) {
+    const lines = [`「${result.keyword}」に一致する会話は見つかりませんでした。`, '', `検索: メール ${result.scanned.mail}件 / Teams ${result.scanned.teams}件`];
+    appendWarnings(lines, result.warnings);
+    return lines.join('\n');
+  }
+
+  const lines = [`「${result.keyword}」に関する会話が ${result.matches.length}件見つかりました。`, ''];
+  result.matches.forEach((match, position) => {
+    const status = match.iRepliedLast ? '✅ 自分が最後に発言' : '📨 相手の発言で止まっています';
+    lines.push(`${position + 1}. ${match.subject} / ${SOURCE_LABEL[match.source]}`);
+    lines.push(`   ${formatDateTime(match.lastMessageTime, tz)}（${match.ageBusinessDays}営業日前） ${match.lastMessageFrom}`);
+    lines.push(`   ${status}`);
+    if (match.participants.length > 0) lines.push(`   参加者: ${match.participants.slice(0, 6).join(' / ')}`);
+    if (match.excerpt) lines.push(`   ${match.excerpt}`);
+    if (position < result.matches.length - 1) lines.push('');
+  });
+
+  appendWarnings(lines, result.warnings);
+  return lines.join('\n');
 }
 
 /** Renders a session summary in the shape described by spec §12. */

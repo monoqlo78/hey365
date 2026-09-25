@@ -13,7 +13,7 @@ Hey365 チェック完了
 
 過去36時間で、あなたの対応が必要と思われるものが 2件あります。
 
-🔴 1. Yohsai Hirano / Teams Channel
+🔴 1. 田中 太郎 / Teams Channel
 00:48（1日前）
 
 内容:
@@ -150,19 +150,44 @@ Just talk to your assistant.
 |---|---|
 | `Hey365` | Triage the last 36 hours and draft replies |
 | `Hey365 24時間` / `Hey365 last 12 hours` | Change the window |
+| `Hey365 for the last 3 business days` | Cover three business days, counting today |
+| `Hey365 as of September 18, 3 business days` | Reach back from a past date — useful after leave |
 | `Hey365 メールだけ` / `Teams only` | Limit the sources |
+| `What's my day look like?` / `morning digest` | Today's meetings, deadlines, stale items and unanswered threads on one screen |
+| `Where did the X discussion end up?` | Search Outlook and Teams together and show whose turn it is |
 | `1をもう少し柔らかく` | Rewrite draft #1 in a softer tone |
 | `3を英語で` | Rewrite draft #3 in English |
 | `1を送って` / `1と3を送って` / `全部送って` | Send those replies **(only when you say so)** |
+| `1 can wait until tomorrow` | Hide it until the next business day |
+| `1 is already handled` | Hide it for good — until a newer message arrives |
+| `Give me the digest every morning at 8` | Register a scheduled run (shown for review first) |
 | `Hey365 session <会議名>` | Summarise a meeting or conversation with decisions, action items and open questions |
 
 The numbering survives client restarts, so you can triage now and send later.
+
+### Coming back from leave
+
+```
+Hey365, as of September 18, three business days
+```
+
+`asOf` sets the reference point and `businessDays` sets how far back to reach. The reference day counts as the first day, and weekends and public holidays do not consume one. This is how you decide where to start reading again after a long break.
+
+### Stale alerts
+
+Anything left unanswered past three business days (`HEY365_STALE_AFTER_DAYS`) is marked, promoted in importance and sorted to the top.
 
 ### From the terminal
 
 ```bash
 node dist/index.js triage --hours 36 --limit 10
-node dist/index.js triage --no-drafts
+node dist/index.js triage --business-days 3 --as-of 2026-09-18
+node dist/index.js digest                      # today's meetings, deadlines, unanswered
+node dist/index.js digest --out ~/hey365.txt   # write to a file, for scheduled runs
+node dist/index.js find "Fabric migration"     # search people and topics across both
+node dist/index.js mutes                       # what is currently hidden
+node dist/index.js schedule add --at 08:30     # print the command only
+node dist/index.js schedule add --at 08:30 --apply
 node dist/index.js session "Fabric 定例"
 node dist/index.js health --deep
 ```
@@ -171,11 +196,16 @@ node dist/index.js health --deep
 
 | Tool | Input | Purpose |
 |---|---|---|
-| `hey365` | `hours`, `sources`, `limit`, `includeDrafts` | Alias of `hey365_triage`, the entry point for "Hey365" |
-| `hey365_triage` | `hours` (default 36), `sources` (`outlook`/`teams`/`meetings`), `limit`, `includeDrafts` | Scan, triage and draft |
+| `hey365` | `hours`, `businessDays`, `asOf`, `sources`, `limit`, `includeDrafts` | Alias of `hey365_triage`, the entry point for "Hey365" |
+| `hey365_triage` | `hours` (default 36), `businessDays`, `asOf`, `sources` (`outlook`/`teams`/`meetings`), `limit`, `includeDrafts` | Scan, triage and draft |
+| `hey365_digest` | `asOf`, `businessDays`, `limit` | Today's meetings, due items, stale items and unanswered threads on one screen |
+| `hey365_find` | `keyword`, `days`, `sources`, `limit` | Search Outlook and Teams by person or topic and show whose turn it is |
 | `hey365_session` | `sessionId`, `includeDraft` | Summarise one meeting/thread: decisions, action items, open questions |
 | `hey365_draft` | `itemId`, `instruction` | Rewrite a draft ("softer", "shorter", "in English") |
 | `hey365_send` | `itemIds`, `confirm` | Send approved replies into the original thread |
+| `hey365_snooze` | `itemIds`, `action` (`snooze`/`done`/`unmute`), `businessDays`, `note` | Hide for a while, mark handled, or bring it back |
+| `hey365_mutes` | – | List everything currently hidden |
+| `hey365_schedule` | `action` (`list`/`add`/`remove`), `job`, `at`, `weekdaysOnly`, `apply` | Register, remove or list scheduled digest runs |
 | `hey365_health` | `deep` | Connection, authentication, read/write status |
 | `hey365_setup` | `interactive` | Install + authenticate Work IQ |
 | `hey365_install` | `clients`, `dryRun` | Register Hey365 with other MCP clients |
@@ -186,6 +216,8 @@ node dist/index.js health --deep
 - **What you saw is what is sent.** Each draft carries a hash; `hey365_send` refuses to send text you have not seen.
 - **Replies stay in the thread.** Sending uses `reply`, so Hey365 never starts a new conversation or adds new recipients.
 - **Drafts never invent facts.** If the thread lacks the information needed to answer, the draft says so and asks you to decide.
+- **"Handled" is reversible.** A conversation you marked done comes back automatically once a newer message arrives, because that was only ever a statement about what you had already read.
+- **Scheduling does not touch your machine silently.** `hey365_schedule` prints the exact command it would register and only writes it when you pass `apply=true`.
 - **Nothing leaves your machine except through Microsoft Graph.** No third-party API, no telemetry. Logs go to stderr with tokens redacted, and local state (`~/.hey365/state.json`) is written with `0600`.
 
 ## Environment variables
@@ -196,6 +228,7 @@ node dist/index.js health --deep
 | `HEY365_VIP` | – | Comma-separated addresses that get an importance boost |
 | `HEY365_MY_NAMES` | – | Extra spellings of your name (e.g. `曽我部,Sogabe`) used to detect when someone addresses you by name |
 | `HEY365_BUSINESS_DAYS` | `on` | `off` counts the window in wall-clock hours instead of working time |
+| `HEY365_STALE_AFTER_DAYS` | `3` | Business days after which an unanswered item is flagged as stale |
 | `HEY365_HOLIDAY_CALENDAR` | auto | `jp` forces the Japanese public-holiday calendar, `none` disables it. Defaults to `jp` when the timezone is `Asia/Tokyo` |
 | `HEY365_HOLIDAYS` | – | Extra non-working days as comma-separated `YYYY-MM-DD` (company holidays, your own leave) |
 | `HEY365_WORKIQ_COMMAND` | auto | Override how the Work IQ CLI is launched |

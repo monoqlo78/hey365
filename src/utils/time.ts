@@ -27,6 +27,10 @@ export interface TimeWindow {
   endIso: string;
   /** Non-business days that the window skipped over, as `YYYY-MM-DD`. */
   skippedDays: string[];
+  /** Set when the window was requested as a count of business days. */
+  businessDays?: number;
+  /** Set when the window ends somewhere other than "now". */
+  asOf?: string;
 }
 
 /* ------------------------------------------------------------------ *
@@ -57,20 +61,43 @@ interface CalendarDay {
   startsAt: number;
 }
 
+/**
+ * The instant of local midnight for a calendar date. Resolved twice because the
+ * offset has to be read at the boundary itself for DST transitions to land on
+ * the right side.
+ */
+function localMidnight(year: number, month: number, day: number, tz: string): number {
+  const naive = Date.UTC(year, month - 1, day);
+  const guess = naive - tzOffsetMs(naive, tz);
+  return naive - tzOffsetMs(guess, tz);
+}
+
 function calendarDay(instant: number, tz: string): CalendarDay {
   const offset = tzOffsetMs(instant, tz);
   const local = new Date(instant + offset);
   const year = local.getUTCFullYear();
   const month = local.getUTCMonth() + 1;
   const day = local.getUTCDate();
-  const midnightLocal = Date.UTC(year, month - 1, day);
-  // Re-read the offset at the boundary itself so DST transitions land right.
-  const startsAt = midnightLocal - tzOffsetMs(midnightLocal - offset, tz);
-  return { year, month, day, weekday: local.getUTCDay(), startsAt };
+  return { year, month, day, weekday: local.getUTCDay(), startsAt: localMidnight(year, month, day, tz) };
 }
 
 function isoDate({ year, month, day }: CalendarDay): string {
   return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+/** Local midnight-to-midnight bounds of a `YYYY-MM-DD` date. */
+export function localDayBounds(date: string, tz: string = timezone()): { start: Date; end: Date } {
+  const [year, month, day] = date.split('-').map(Number) as [number, number, number];
+  const start = localMidnight(year, month, day, tz);
+  // +36h then rounding down lands on the next local midnight even across DST.
+  const next = calendarDay(start + 36 * 3600_000, tz).startsAt;
+  return { start: new Date(start), end: new Date(next - 1) };
+}
+
+/** The local calendar date of an instant, as `YYYY-MM-DD`. */
+export function localDate(instant: Date | number, tz: string = timezone()): string {
+  const ms = instant instanceof Date ? instant.getTime() : instant;
+  return isoDate(calendarDay(ms, tz));
 }
 
 function nthWeekday(year: number, month: number, weekday: number, nth: number): number {
@@ -220,6 +247,127 @@ export function buildWindow(hours: number, now: Date = new Date(), tz: string = 
     endIso: end.toISOString(),
     skippedDays,
   };
+}
+
+/**
+ * Covers the last N business days, counting the reference day itself as the
+ * first one. The window starts at local midnight of the Nth business day back,
+ * so "3営業日" on a Wednesday reaches Monday 00:00. A reference day that is
+ * itself a weekend or holiday does not consume one of the N.
+ */
+export function buildBusinessDayWindow(days: number, end: Date = new Date(), tz: string = timezone()): TimeWindow {
+  const safeDays = Number.isFinite(days) && days > 0 ? Math.min(Math.floor(days), 60) : 3;
+  const skippedDays: string[] = [];
+  const honourCalendar = businessDaysEnabled();
+
+  let day = calendarDay(end.getTime(), tz);
+  let startMs = day.startsAt;
+  let counted = 0;
+
+  for (let guard = 0; guard < 400; guard += 1) {
+    if (!honourCalendar || isBusinessDay(day, tz)) {
+      counted += 1;
+      startMs = day.startsAt;
+      if (counted >= safeDays) break;
+    } else {
+      skippedDays.push(isoDate(day));
+    }
+    day = calendarDay(day.startsAt - 1, tz);
+  }
+
+  const start = new Date(startMs);
+  return {
+    hours: Math.max(1, Math.round((end.getTime() - start.getTime()) / 3600_000)),
+    start,
+    end,
+    startIso: start.toISOString(),
+    endIso: end.toISOString(),
+    skippedDays,
+    businessDays: safeDays,
+  };
+}
+
+/**
+ * Parses the `asOf` reference point. A bare `YYYY-MM-DD` means "that whole
+ * day", so it resolves to the last instant of the local day; anything else is
+ * read as a full instant.
+ */
+export function parseAsOf(value: string | Date | null | undefined, tz: string = timezone()): Date | undefined {
+  if (!value) return undefined;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? undefined : value;
+
+  const trimmed = value.trim();
+  const dateOnly = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(trimmed);
+  if (dateOnly) {
+    const nextMidnight = localMidnight(Number(dateOnly[1]), Number(dateOnly[2]), Number(dateOnly[3]) + 1, tz);
+    return new Date(nextMidnight - 1);
+  }
+
+  const parsed = new Date(trimmed);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+}
+
+export interface WindowSpec {
+  /** Working hours to reach back. Ignored when `businessDays` is given. */
+  hours?: number;
+  /** Whole business days to reach back, counting the reference day. */
+  businessDays?: number;
+  /** Reference point the window ends at. Defaults to now. */
+  asOf?: string | Date;
+  now?: Date;
+}
+
+/** Single entry point that turns a tool's window arguments into a range. */
+export function resolveWindow(spec: WindowSpec, tz: string = timezone()): TimeWindow {
+  const now = spec.now ?? new Date();
+  const end = spec.asOf === undefined ? now : parseAsOf(spec.asOf, tz);
+  if (!end) throw new Error(`asOf を解釈できませんでした: ${String(spec.asOf)}`);
+
+  const window = spec.businessDays
+    ? buildBusinessDayWindow(spec.businessDays, end, tz)
+    : buildWindow(spec.hours ?? 36, end, tz);
+
+  // Only label it when the caller actually moved the reference point.
+  if (spec.asOf !== undefined) window.asOf = end.toISOString();
+  return window;
+}
+
+/**
+ * Whole business days between two instants, counted as calendar days rather
+ * than elapsed hours: a Friday evening message is already "1営業日" old on
+ * Monday morning, because Monday is the next working day after it arrived.
+ */
+export function businessDaysBetween(from: Date, to: Date = new Date(), tz: string = timezone()): number {
+  if (to.getTime() <= from.getTime()) return 0;
+  const honourCalendar = businessDaysEnabled();
+
+  const startDay = calendarDay(from.getTime(), tz);
+  let day = calendarDay(to.getTime(), tz);
+  let elapsed = 0;
+
+  for (let guard = 0; guard < 400 && day.startsAt > startDay.startsAt; guard += 1) {
+    if (!honourCalendar || isBusinessDay(day, tz)) elapsed += 1;
+    day = calendarDay(day.startsAt - 1, tz);
+  }
+  return elapsed;
+}
+
+/**
+ * Start of the Nth next business day. Used by snooze so "また明日" lands at the
+ * beginning of the next working morning rather than 24 hours later.
+ */
+export function addBusinessDays(from: Date, days: number, tz: string = timezone()): Date {
+  const steps = Number.isFinite(days) && days > 0 ? Math.floor(days) : 1;
+  const honourCalendar = businessDaysEnabled();
+  let day = calendarDay(from.getTime(), tz);
+  let moved = 0;
+
+  for (let guard = 0; guard < 400 && moved < steps; guard += 1) {
+    // Local midnight of the following calendar day.
+    day = calendarDay(day.startsAt + 36 * 3600_000, tz);
+    if (!honourCalendar || isBusinessDay(day, tz)) moved += 1;
+  }
+  return new Date(day.startsAt);
 }
 
 export function parseDate(value: string | null | undefined): Date | undefined {

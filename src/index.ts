@@ -4,7 +4,7 @@ import { CLIENTS, buildServerSpec, findClient, installForClient, renderConfig } 
 import { summarizeSession } from './services/session-summary.js';
 import { checkHealth, runSetup } from './services/setup.js';
 import { startStdioServer, HEY365_VERSION } from './server.js';
-import { triageTool } from './tools/index.js';
+import { digestTool, findTool, mutesTool, scheduleTool, triageTool } from './tools/index.js';
 import { asHey365Error } from './utils/errors.js';
 import { timezone } from './utils/time.js';
 
@@ -13,6 +13,10 @@ const USAGE = `hey365 ${HEY365_VERSION}
 Usage:
   hey365 mcp                         MCP stdio サーバーを起動する（既定）
   hey365 triage [--hours 36]         ターミナルからトリアージを実行する
+  hey365 digest [--as-of 2026-09-25] 今日の会議・期限・未返信をまとめて表示する
+  hey365 mutes                       snooze / 対応済みで隠している項目を一覧する
+  hey365 find <keyword>              人名・案件名で Outlook / Teams を横断検索する
+  hey365 schedule [list|add|remove]  ダイジェストの定期実行を設定する（--apply で反映）
   hey365 session <sessionId>         会議 / 会話を要約する
   hey365 health [--deep]             接続状態を確認する
   hey365 setup [--no-interactive]    Work IQ のインストール / 認証を復旧する
@@ -24,8 +28,16 @@ ${CLIENTS.map((client) => `  ${client.id.padEnd(15)} ${client.label}`).join('\n'
 
 Options:
   --hours <n>        triage の対象時間（既定 36）
+  --business-days <n> 何営業日さかのぼるか。基準日自身が1日目（--hours より優先）
+  --as-of <date>     基準日。YYYY-MM-DD ならその日の終わりまで（既定 現在）
   --limit <n>        triage の最大件数（既定 10）
+  --days <n>         find で Teams をさかのぼる日数（既定 180）
   --no-drafts        返信案を生成しない
+  --out <file>       digest の出力先ファイル（定期実行用）
+  --at <HH:MM>       schedule add の実行時刻（既定 08:30）
+  --job <name>       schedule の対象（digest | triage）
+  --all-days         schedule を平日だけでなく毎日実行する
+  --apply            schedule を実際に OS に登録/解除する
   --deep             health で各サービスの到達性も確認する
   --dry-run          install で書き込まずに内容だけ表示する
   --path <file>      install の書き込み先を上書きする
@@ -36,6 +48,7 @@ Environment:
   HEY365_VIP               重要送信者のメールアドレス（カンマ区切り）
   HEY365_MY_NAMES          自分の名前の別表記（カンマ区切り。例: 曽我部,Sogabe）
   HEY365_BUSINESS_DAYS     off で営業日換算を無効化（既定 on）
+  HEY365_STALE_AFTER_DAYS  何営業日放置で警告するか（既定 3）
   HEY365_HOLIDAY_CALENDAR  jp | none（既定: Asia/Tokyo なら jp）
   HEY365_HOLIDAYS          追加の非稼働日（YYYY-MM-DD のカンマ区切り）
   HEY365_WORKIQ_COMMAND    Work IQ CLI の起動コマンドを上書きする
@@ -103,9 +116,88 @@ async function main(): Promise<void> {
 
     case 'triage': {
       const response = await triageTool({
-        hours: numberFlag(args.flags, 'hours', 36),
+        ...(args.flags.hours !== undefined ? { hours: numberFlag(args.flags, 'hours', 36) } : {}),
+        ...(args.flags['business-days'] !== undefined
+          ? { businessDays: numberFlag(args.flags, 'business-days', 3) }
+          : {}),
+        ...(typeof args.flags['as-of'] === 'string' ? { asOf: args.flags['as-of'] } : {}),
         limit: numberFlag(args.flags, 'limit', 10),
         includeDrafts: !boolFlag(args.flags, 'no-drafts'),
+      });
+      const text = response.content.map((part) => part.text).join('\n');
+      if (response.isError) {
+        process.stderr.write(`${text}\n`);
+        process.exitCode = 1;
+        return;
+      }
+      process.stdout.write(`${text}\n`);
+      return;
+    }
+
+    case 'digest': {
+      const response = await digestTool({
+        ...(typeof args.flags['as-of'] === 'string' ? { asOf: args.flags['as-of'] } : {}),
+        ...(args.flags['business-days'] !== undefined
+          ? { businessDays: numberFlag(args.flags, 'business-days', 3) }
+          : {}),
+        limit: numberFlag(args.flags, 'limit', 15),
+      });
+      const text = response.content.map((part) => part.text).join('\n');
+      if (response.isError) {
+        process.stderr.write(`${text}\n`);
+        process.exitCode = 1;
+        return;
+      }
+      const out = args.flags.out;
+      if (typeof out === 'string') {
+        const { writeFileSync, mkdirSync } = await import('node:fs');
+        const { dirname } = await import('node:path');
+        mkdirSync(dirname(out), { recursive: true });
+        writeFileSync(out, `${text}\n`, 'utf8');
+        process.stdout.write(`ダイジェストを ${out} に書き出しました。\n`);
+        return;
+      }
+      process.stdout.write(`${text}\n`);
+      return;
+    }
+
+    case 'mutes': {
+      const response = await mutesTool();
+      process.stdout.write(`${response.content.map((part) => part.text).join('\n')}\n`);
+      return;
+    }
+
+    case 'find': {
+      const keyword = args.positionals.join(' ').trim();
+      if (!keyword) {
+        process.stderr.write('検索キーワードを指定してください。\n');
+        process.exitCode = 1;
+        return;
+      }
+      const response = await findTool({
+        keyword,
+        limit: numberFlag(args.flags, 'limit', 10),
+        ...(args.flags.days !== undefined ? { days: numberFlag(args.flags, 'days', 180) } : {}),
+      });
+      const text = response.content.map((part) => part.text).join('\n');
+      if (response.isError) {
+        process.stderr.write(`${text}\n`);
+        process.exitCode = 1;
+        return;
+      }
+      process.stdout.write(`${text}\n`);
+      return;
+    }
+
+    case 'schedule': {
+      const action = (args.positionals[0] ?? 'list') as 'list' | 'add' | 'remove';
+      const response = await scheduleTool({
+        action,
+        ...(typeof args.flags.job === 'string' ? { job: args.flags.job as 'digest' | 'triage' } : {}),
+        ...(typeof args.flags.at === 'string' ? { at: args.flags.at } : {}),
+        ...(typeof args.flags.out === 'string' ? { out: args.flags.out } : {}),
+        ...(boolFlag(args.flags, 'all-days') ? { weekdaysOnly: false } : {}),
+        apply: boolFlag(args.flags, 'apply'),
       });
       const text = response.content.map((part) => part.text).join('\n');
       if (response.isError) {

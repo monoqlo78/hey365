@@ -1,9 +1,24 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
+import { findMute, listMutes, muteConversation, resetStateCache, unmuteConversation } from '../src/services/store.js';
 import { collapseDoubledAnswer, extractJsonDocuments } from '../src/services/workiq.js';
 import { redact } from '../src/utils/logger.js';
 import { detectLanguage, htmlToText, normalizeSubject, similarity, stripQuotedHistory } from '../src/utils/text.js';
-import { buildWindow, formatDateTime, formatTime, japaneseHolidays } from '../src/utils/time.js';
+import {
+  addBusinessDays,
+  buildBusinessDayWindow,
+  buildWindow,
+  businessDaysBetween,
+  formatDateTime,
+  formatTime,
+  japaneseHolidays,
+  localDate,
+  parseAsOf,
+  resolveWindow,
+} from '../src/utils/time.js';
 import { classifyFailure } from '../src/utils/errors.js';
 import { mergeJson, mergeToml, renderConfig } from '../src/services/install.js';
 import { dedupeActionItems } from '../src/services/dedupe.js';
@@ -119,6 +134,146 @@ describe('time window', () => {
   it('formats in the requested timezone', () => {
     expect(formatTime('2026-09-20T01:32:00Z', 'Asia/Tokyo')).toBe('10:32');
     expect(formatDateTime('2026-09-20T05:00:00Z', 'Asia/Tokyo')).toBe('2026-09-20 14:00');
+  });
+});
+
+describe('business-day window', () => {
+  it('counts the reference day as the first business day', () => {
+    // Wed 2026-10-07 -> Wed, Tue, Mon; starts at Monday 00:00 JST.
+    const window = buildBusinessDayWindow(3, new Date('2026-10-07T05:00:00Z'), 'Asia/Tokyo');
+    expect(window.startIso).toBe('2026-10-04T15:00:00.000Z');
+    expect(window.businessDays).toBe(3);
+    expect(window.skippedDays).toEqual([]);
+  });
+
+  it('reaches into the previous week from a Monday', () => {
+    // Mon 2026-10-05 -> Mon, (Sun/Sat skipped), Fri, Thu.
+    const window = buildBusinessDayWindow(3, new Date('2026-10-05T05:00:00Z'), 'Asia/Tokyo');
+    expect(window.startIso).toBe('2026-09-30T15:00:00.000Z');
+    expect(window.skippedDays).toEqual(['2026-10-04', '2026-10-03']);
+  });
+
+  it('does not let a holiday reference day consume one of the days', () => {
+    // 2026-09-23 is 秋分の日, and 09-21/09-22 are holidays too.
+    const window = buildBusinessDayWindow(2, new Date('2026-09-23T05:00:00Z'), 'Asia/Tokyo');
+    expect(window.startIso).toBe('2026-09-16T15:00:00.000Z'); // Thu 09-17 00:00 JST
+    expect(window.skippedDays).toContain('2026-09-23');
+  });
+
+  it('reads a bare date as the whole local day', () => {
+    expect(parseAsOf('2026-10-07', 'Asia/Tokyo')?.toISOString()).toBe('2026-10-07T14:59:59.999Z');
+    expect(parseAsOf('2026-10-07T09:00:00Z', 'Asia/Tokyo')?.toISOString()).toBe('2026-10-07T09:00:00.000Z');
+    expect(parseAsOf('not a date', 'Asia/Tokyo')).toBeUndefined();
+  });
+
+  it('ends a dated business-day window at the end of that day', () => {
+    const window = resolveWindow({ businessDays: 3, asOf: '2026-10-07' }, 'Asia/Tokyo');
+    expect(window.startIso).toBe('2026-10-04T15:00:00.000Z');
+    expect(window.endIso).toBe('2026-10-07T14:59:59.999Z');
+    expect(window.asOf).toBe('2026-10-07T14:59:59.999Z');
+  });
+
+  it('still honours hours when no business-day count is given', () => {
+    const window = resolveWindow({ hours: 36, now: new Date('2026-09-20T10:00:00Z') }, 'Asia/Tokyo');
+    expect(window.startIso).toBe('2026-09-17T03:00:00.000Z');
+    expect(window.businessDays).toBeUndefined();
+    expect(window.asOf).toBeUndefined();
+  });
+
+  it('rejects an unparseable reference date', () => {
+    expect(() => resolveWindow({ businessDays: 3, asOf: 'yesterday' }, 'Asia/Tokyo')).toThrow();
+  });
+});
+
+describe('business-day arithmetic', () => {
+  it('counts calendar days elapsed, not hours', () => {
+    // Friday 18:00 JST -> Monday 09:00 JST is one business day, not zero.
+    const from = new Date('2026-10-02T09:00:00Z');
+    const to = new Date('2026-10-05T00:00:00Z');
+    expect(businessDaysBetween(from, to, 'Asia/Tokyo')).toBe(1);
+  });
+
+  it('returns zero within the same day', () => {
+    const from = new Date('2026-10-07T00:00:00Z');
+    const to = new Date('2026-10-07T09:00:00Z');
+    expect(businessDaysBetween(from, to, 'Asia/Tokyo')).toBe(0);
+  });
+
+  it('skips weekends when adding days', () => {
+    // Friday + 1 business day = Monday.
+    const monday = addBusinessDays(new Date('2026-10-02T05:00:00Z'), 1, 'Asia/Tokyo');
+    expect(localDate(monday, 'Asia/Tokyo')).toBe('2026-10-05');
+  });
+
+  it('skips a public holiday when adding days', () => {
+    // 2026-09-21 is 敬老の日; from Friday 09-18 the next working day is 09-24.
+    const next = addBusinessDays(new Date('2026-09-18T05:00:00Z'), 1, 'Asia/Tokyo');
+    expect(localDate(next, 'Asia/Tokyo')).toBe('2026-09-24');
+  });
+
+  it('reports the local calendar date across the UTC boundary', () => {
+    expect(localDate(new Date('2026-10-06T16:00:00Z'), 'Asia/Tokyo')).toBe('2026-10-07');
+    expect(localDate(new Date('2026-10-06T14:00:00Z'), 'Asia/Tokyo')).toBe('2026-10-06');
+  });
+});
+
+describe('snooze and done', () => {
+  const stateFile = join(tmpdir(), `hey365-test-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
+
+  beforeEach(() => {
+    process.env.HEY365_STATE_FILE = stateFile;
+    resetStateCache();
+    rmSync(stateFile, { force: true });
+  });
+
+  afterEach(() => {
+    rmSync(stateFile, { force: true });
+    delete process.env.HEY365_STATE_FILE;
+    resetStateCache();
+  });
+
+  const base = {
+    conversationId: 'AAQk',
+    subject: '見積の確認',
+    lastMessageTime: '2026-10-05T01:00:00.000Z',
+  };
+
+  it('hides a conversation the user marked done', () => {
+    muteConversation({ ...base, kind: 'done' });
+    expect(findMute(base.conversationId, base.lastMessageTime)).toBeDefined();
+  });
+
+  it('shows it again once a newer message arrives', () => {
+    muteConversation({ ...base, kind: 'done' });
+    expect(findMute(base.conversationId, '2026-10-06T02:00:00.000Z')).toBeUndefined();
+  });
+
+  it('keeps hiding it while the thread is unchanged', () => {
+    muteConversation({ ...base, kind: 'snoozed', until: '2026-10-06T00:00:00.000Z' });
+    const before = new Date('2026-10-05T12:00:00.000Z');
+    expect(findMute(base.conversationId, base.lastMessageTime, before)).toBeDefined();
+  });
+
+  it('expires a snooze once the deadline passes', () => {
+    muteConversation({ ...base, kind: 'snoozed', until: '2026-10-06T00:00:00.000Z' });
+    const after = new Date('2026-10-06T01:00:00.000Z');
+    expect(findMute(base.conversationId, base.lastMessageTime, after)).toBeUndefined();
+    expect(listMutes(after)).toHaveLength(0);
+  });
+
+  it('restores an item on request', () => {
+    muteConversation({ ...base, kind: 'done' });
+    expect(unmuteConversation(base.conversationId)).toBe(true);
+    expect(unmuteConversation(base.conversationId)).toBe(false);
+    expect(findMute(base.conversationId, base.lastMessageTime)).toBeUndefined();
+  });
+
+  it('replaces an existing mute instead of stacking duplicates', () => {
+    muteConversation({ ...base, kind: 'snoozed', until: '2026-10-06T00:00:00.000Z' });
+    muteConversation({ ...base, kind: 'done' });
+    const mutes = listMutes(new Date('2026-10-05T12:00:00.000Z'));
+    expect(mutes).toHaveLength(1);
+    expect(mutes[0]?.kind).toBe('done');
   });
 });
 

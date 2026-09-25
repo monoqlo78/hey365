@@ -177,6 +177,21 @@ export async function listSentMail(since: Date, top = 80): Promise<GraphMessage[
   return result?.value ?? [];
 }
 
+/**
+ * Full-text search across the whole mailbox, both received and sent, so that a
+ * question like "how did the X discussion end?" can be answered without
+ * knowing when it happened. `$search` cannot be combined with `$orderby`.
+ */
+export async function searchMail(keyword: string, top = 40): Promise<GraphMessage[]> {
+  const quoted = keyword.replace(/"/g, '');
+  const [inbox, sent] = await fetchMany<GraphCollection<GraphMessage>>([
+    `/me/messages?$search="${encodeURIComponent(quoted)}"&$top=${top}&$select=${MAIL_SELECT}`,
+    `/me/mailFolders/SentItems/messages?$search="${encodeURIComponent(quoted)}"&$top=${top}&$select=${MAIL_SELECT}`,
+  ]);
+  const sentItems = (sent?.data?.value ?? []).map((message) => ({ ...message, fromSentItems: true }));
+  return [...(inbox?.data?.value ?? []), ...sentItems];
+}
+
 export async function listCalendar(start: Date, end: Date, top = 50): Promise<GraphEvent[]> {
   const result = await tryFetch<GraphCollection<GraphEvent>>(calendarUrl(start, end, top));
   return result?.value ?? [];
@@ -200,18 +215,19 @@ interface SearchResponse {
  * coverage (1:1 chats, group chats and channel posts) goes through the
  * Microsoft Search API instead.
  */
-export async function searchTeamsMessages(since: Date, size = 300): Promise<GraphChatMessage[]> {
+export async function searchTeamsMessages(since: Date, size = 300, keyword?: string): Promise<GraphChatMessage[]> {
   // The Search API caps a single request at 100 hits and silently drops the
   // rest, so a wider window needs paging or the oldest messages disappear.
   const pageSize = 100;
   const messages: GraphChatMessage[] = [];
   const seen = new Set<string>();
+  const terms = keyword?.trim() ? `${keyword.trim()} AND sent>=${toKqlDate(since)}` : `sent>=${toKqlDate(since)}`;
   for (let from = 0; from < size; from += pageSize) {
     const body = {
       requests: [
         {
           entityTypes: ['chatMessage'],
-          query: { queryString: `sent>=${toKqlDate(since)}` },
+          query: { queryString: terms },
           from,
           size: Math.min(pageSize, size - from),
         },

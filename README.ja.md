@@ -13,7 +13,7 @@ Hey365 チェック完了
 
 過去36時間で、あなたの対応が必要と思われるものが 2件あります。
 
-🔴 1. Yohsai Hirano / Teams Channel
+🔴 1. 田中 太郎 / Teams Channel
 00:48（1日前）
 
 内容:
@@ -150,19 +150,44 @@ args = ["/絶対パス/hey365/dist/index.js", "mcp"]
 |---|---|
 | `Hey365` | 過去36時間をトリアージして返信案まで作成 |
 | `Hey365 24時間` / `Hey365 last 12 hours` | 対象期間を変更 |
+| `Hey365 3営業日分` | 直近3営業日（当日を含む）を対象にする |
+| `9月18日を基準に3営業日` | 過去の日を基準にさかのぼる（休暇明けの確認に） |
 | `Hey365 メールだけ` / `Teams だけ` | 対象ソースを限定 |
+| `今日のまとめ` / `朝のダイジェスト` | 今日の会議・期限・放置中・未返信を1画面で |
+| `田中さんの件どうなってる?` | Outlook と Teams を横断検索し、どちらが返す番かを表示 |
 | `1をもう少し柔らかく` | 1番の返信案をやわらかい表現に書き直す |
 | `3を英語で` | 3番の返信案を英語に書き直す |
 | `1を送って` / `1と3を送って` / `全部送って` | その返信を送信する**（指示したときだけ）** |
+| `1は明日でいい` | 翌営業日まで非表示にする |
+| `1は対応済み` | 以後表示しない（新しい返信が来たら再表示） |
+| `毎朝8時にダイジェストを出して` | OS のスケジューラに定期実行を登録（確認してから適用） |
 | `Hey365 session <会議名>` | 会議・会話を要約（決定事項・Action Items・未解決） |
 
 番号はクライアントを再起動しても保持されるので、朝トリアージして夕方に送る、といった使い方もできます。
+
+### 休暇明けの使い方
+
+```
+9月18日を基準に3営業日分を見せて
+```
+
+`asOf` で基準日を、`businessDays` でさかのぼる営業日数を指定します。基準日自身を1日目として数え、土日祝は日数を消費しません。長期休暇のあとに「どこから読み直せばいいか」を決めるのに使えます。
+
+### 放置アラート
+
+3営業日（`HEY365_STALE_AFTER_DAYS` で変更可）を超えて返信していない用件には `⏰ N営業日おきっぱなしです。` が付き、重要度が自動で引き上げられ、一覧の先頭に並びます。
 
 ### ターミナルから使う
 
 ```bash
 node dist/index.js triage --hours 36 --limit 10
-node dist/index.js triage --no-drafts
+node dist/index.js triage --business-days 3 --as-of 2026-09-18
+node dist/index.js digest                      # 今日の会議・期限・未返信
+node dist/index.js digest --out ~/hey365.txt   # ファイルに書き出す（定期実行向け）
+node dist/index.js find "Fabric 移行"           # 人名・案件名で横断検索
+node dist/index.js mutes                       # 非表示にしている項目の一覧
+node dist/index.js schedule add --at 08:30     # 内容を表示するだけ
+node dist/index.js schedule add --at 08:30 --apply
 node dist/index.js session "Fabric 定例"
 node dist/index.js health --deep
 ```
@@ -171,11 +196,16 @@ node dist/index.js health --deep
 
 | ツール | 入力 | 役割 |
 |---|---|---|
-| `hey365` | `hours`, `sources`, `limit`, `includeDrafts` | `hey365_triage` の別名。「Hey365」の入口 |
-| `hey365_triage` | `hours`（既定36）, `sources`（`outlook`/`teams`/`meetings`）, `limit`, `includeDrafts` | 収集・トリアージ・返信案作成 |
+| `hey365` | `hours`, `businessDays`, `asOf`, `sources`, `limit`, `includeDrafts` | `hey365_triage` の別名。「Hey365」の入口 |
+| `hey365_triage` | `hours`（既定36）, `businessDays`, `asOf`, `sources`（`outlook`/`teams`/`meetings`）, `limit`, `includeDrafts` | 収集・トリアージ・返信案作成 |
+| `hey365_digest` | `asOf`, `businessDays`, `limit` | 今日の会議・期限切れ・放置中・未返信を1画面にまとめる |
+| `hey365_find` | `keyword`, `days`, `sources`, `limit` | 人名や案件名で Outlook と Teams を横断検索。どちらが返す番かを表示 |
 | `hey365_session` | `sessionId`, `includeDraft` | 会議やスレッドを要約（決定事項・Action Items・未解決） |
 | `hey365_draft` | `itemId`, `instruction` | 返信案の書き直し（柔らかく／短く／英語で） |
 | `hey365_send` | `itemIds`, `confirm` | 承認された返信を元のスレッドに送信 |
+| `hey365_snooze` | `itemIds`, `action`（`snooze`/`done`/`unmute`）, `businessDays`, `note` | 一定期間隠す／対応済みにする／再表示する |
+| `hey365_mutes` | – | いま隠している項目の一覧 |
+| `hey365_schedule` | `action`（`list`/`add`/`remove`）, `job`, `at`, `weekdaysOnly`, `apply` | ダイジェストの定期実行を登録・解除・一覧 |
 | `hey365_health` | `deep` | 接続・認証・読み書き権限の状態 |
 | `hey365_setup` | `interactive` | Work IQ の導入と認証 |
 | `hey365_install` | `clients`, `dryRun` | 他の MCP クライアントへ Hey365 を登録 |
@@ -186,6 +216,8 @@ node dist/index.js health --deep
 - **見たものだけが送られる。** 返信案にはハッシュを付与し、`hey365_send` はあなたが見ていない文面の送信を拒否します。
 - **スレッドから出ない。** 送信は `reply` を使うため、新規スレッドの作成や宛先の追加は行いません。
 - **事実を創作しない。** 回答に必要な情報が会話中に無い場合、返信案はその旨を明示し、あなたの判断を求めます。
+- **「対応済み」は取り消せる。** `done` にした会話でも、より新しいメッセージが届けば自動で再表示されます。読んだ分についての宣言でしかないためです。
+- **OS を勝手に変更しない。** `hey365_schedule` は既定では登録するコマンドを表示するだけで、`apply=true` を指定したときだけ実際に登録します。
 - **外部送信なし。** Microsoft Graph 以外の第三者 API もテレメトリもありません。ログは stderr のみでトークンは秘匿され、ローカル状態（`~/.hey365/state.json`）は `0600` で保存されます。
 
 ## 環境変数
@@ -196,6 +228,7 @@ node dist/index.js health --deep
 | `HEY365_VIP` | – | 重要送信者のアドレス（カンマ区切り）。重要度を加点 |
 | `HEY365_MY_NAMES` | – | 自分の名前の別表記（例: `曽我部,Sogabe`）。本文で名指しされたかの判定に使用 |
 | `HEY365_BUSINESS_DAYS` | `on` | `off` にすると営業日換算をやめ、単純な実時間で遡る |
+| `HEY365_STALE_AFTER_DAYS` | `3` | 何営業日放置されたら「放置中」として警告するか |
 | `HEY365_HOLIDAY_CALENDAR` | 自動 | `jp` で日本の祝日カレンダーを強制、`none` で無効化。タイムゾーンが `Asia/Tokyo` なら既定で `jp` |
 | `HEY365_HOLIDAYS` | – | 追加の非稼働日を `YYYY-MM-DD` のカンマ区切りで指定（全社休業日・自分の休暇など） |
 | `HEY365_WORKIQ_COMMAND` | 自動 | Work IQ CLI の起動方法を上書き |

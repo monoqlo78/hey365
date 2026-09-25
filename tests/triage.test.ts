@@ -107,6 +107,33 @@ describe('triage signals', () => {
     expect(decision.excludeReason).toBe('automated');
   });
 
+  it('excludes a bot whose display name spells out "No Reply"', () => {
+    const [thread] = buildThreads([
+      message({
+        id: 'm1',
+        createdDateTime: '2026-09-19T06:00:00Z',
+        from: { name: 'MCEM Alerting Engine (No Reply)', address: 'mcem@example.com' },
+        body: 'Your Pipeline Actions Update. ご確認ください。',
+      }),
+    ]);
+    const decision = triageThread(thread!, ME);
+    expect(decision.needsReply).toBe(false);
+    expect(decision.excludeReason).toBe('automated');
+  });
+
+  it('still lets a human whose message mentions an alert through', () => {
+    const [thread] = buildThreads([
+      message({
+        id: 'm1',
+        createdDateTime: '2026-09-19T06:00:00Z',
+        from: { name: 'Taro Tanaka', address: 'taro@example.com' },
+        body: 'アラートの設定について、ご確認いただけますか？',
+      }),
+    ]);
+    const decision = triageThread(thread!, ME);
+    expect(decision.needsReply).toBe(true);
+  });
+
   it('excludes a pure FYI broadcast where I am only on CC', () => {
     const [thread] = buildThreads([
       message({
