@@ -1,9 +1,9 @@
 {
   "name": "hey365",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Hey365 - a Model Context Protocol server that triages your Microsoft 365 (Outlook / Teams / Calendar) backlog and drafts the replies you actually owe people.",
   "type": "module",
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE",
   "author": "monoqlo78",
   "keywords": [
     "mcp",
@@ -23,7 +23,9 @@
     "dist",
     "README.md",
     "README.ja.md",
-    "LICENSE"
+    "LICENSE",
+    "COMMERCIAL-LICENSE.md",
+    "LICENSE-MIT-legacy.txt"
   ],
   "engines": {
     "node": ">=20.0.0"

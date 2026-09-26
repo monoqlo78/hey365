@@ -29,7 +29,7 @@ import {
 } from './tools/index.js';
 import { logger } from './utils/logger.js';
 
-export const HEY365_VERSION = '0.1.0';
+export const HEY365_VERSION = '0.2.0';
 
 const INSTRUCTIONS = `Hey365 は Microsoft 365 (Outlook / Teams / Calendar) を横断して
 「あなたがまだ返信しておらず、あなたが対応すべき用件」だけを抽出し、返信案を作成します。

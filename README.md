@@ -2,6 +2,8 @@
 
 **日本語版は [README.ja.md](README.ja.md) をご覧ください。**
 
+Free for personal and noncommercial use. **Commercial use requires prior consent and ¥150 per seat** — see [License](#license).
+
 Hey365 is a Model Context Protocol (MCP) server that answers one question:
 
 > **"What do I actually owe people right now?"**
@@ -266,4 +268,33 @@ npm run smoke         # MCP handshake against the built server
 
 ## License
 
-[MIT](LICENSE)
+Hey365 is **source-available**, not open source.
+
+| Use | Licence | Cost |
+| --- | --- | --- |
+| Personal, hobby, study, research | [PolyForm Noncommercial 1.0.0](LICENSE) | Free |
+| Charities, schools, public research, government | [PolyForm Noncommercial 1.0.0](LICENSE) | Free |
+| **Any commercial or business use** | [Commercial licence](COMMERCIAL-LICENSE.md) | **Prior consent + ¥150 per seat** |
+
+### Commercial use
+
+Commercial use is **not** granted by the noncommercial licence. To use Hey365 at
+work, do both of these **before** you start:
+
+1. **Email [monoqlo78@gmail.com](mailto:monoqlo78@gmail.com)** with your
+   organisation, the number of seats, and what you plan to use it for, and wait
+   for the licensor's consent.
+2. **Pay in advance** — either **¥150 per seat** by bank transfer, or the
+   **equivalent of USD 1 per seat** in Bitcoin.
+
+Full terms, bank details and the Bitcoin address are in
+**[COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)**.
+
+Redistribution, resale, or offering Hey365 to third parties as a service is not
+covered — contact the licensor separately.
+
+Dependencies and Microsoft Work IQ carry their own licences and terms.
+
+> Releases up to and including v0.1.0 were published under the MIT License, kept
+> in [LICENSE-MIT-legacy.txt](LICENSE-MIT-legacy.txt). That grant is not revoked
+> for those versions.
