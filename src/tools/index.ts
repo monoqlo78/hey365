@@ -12,8 +12,14 @@ import { buildIdentity, getMe, normalizeChatMessage, normalizeMailMessage } from
 import { sendItem, type SendOutcome } from '../services/sender.js';
 import { summarizeSession } from '../services/session-summary.js';
 import { checkHealth, runSetup } from '../services/setup.js';
+import {
+  autoReconnectEnabled,
+  describeReconnect,
+  reconnect,
+  type ReconnectResult,
+} from '../services/reconnect.js';
 import { getTriage, listMutes, muteConversation, resolveItems, storeSession, storeTriage, unmuteConversation, updateItemDraft } from '../services/store.js';
-import { Hey365Error, asHey365Error } from '../utils/errors.js';
+import { Hey365Error, asHey365Error, isAuthFailure, type Hey365ErrorCode } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
 import { timezone, parseAsOf, addBusinessDays, formatDateTime } from '../utils/time.js';
 import { CLIENTS, buildServerSpec, findClient, installForClient } from '../services/install.js';
@@ -38,6 +44,87 @@ function fail(error: unknown): ToolResponse {
   logger.warn('tool failed', { code: hey.code });
   const text = [`⚠ ${hey.nextStep('ja')}`, '', `code: ${hey.code}`].join('\n');
   return { content: [{ type: 'text', text }], structuredContent: { error: hey.toPayload() }, isError: true };
+}
+
+/* ------------------------------------------------------------------ *
+ * Automatic Work IQ reconnection                                      *
+ * ------------------------------------------------------------------ */
+
+/** Reads the Hey365 error code back out of a tool response, if any. */
+export function errorCodeOf(response: ToolResponse): Hey365ErrorCode | undefined {
+  if (!response.isError) return undefined;
+  const payload = response.structuredContent as { error?: { code?: string } } | undefined;
+  return payload?.error?.code as Hey365ErrorCode | undefined;
+}
+
+function prefixText(response: ToolResponse, note: string): ToolResponse {
+  const [first, ...rest] = response.content;
+  return {
+    ...response,
+    content: [{ type: 'text', text: `${note}\n\n${first?.text ?? ''}` }, ...rest],
+  };
+}
+
+/**
+ * Explains, to the assistant rather than to the user, that the call failed on
+ * an expired sign-in and exactly how to finish the recovery. Without this the
+ * assistant reports "please re-authenticate" and waits for a second
+ * instruction before doing something it was always allowed to do.
+ */
+function explainUnrecovered(response: ToolResponse, tool: string, result?: ReconnectResult): ToolResponse {
+  const payload = (response.structuredContent as { error?: Record<string, unknown> } | undefined)?.error ?? {};
+  const lines = [
+    '⚠ Work IQ の認証が切れています。',
+    result ? `自動再接続を試みましたが完了しませんでした（mode: ${result.mode}）。` : '自動再接続は無効化されています。',
+    '',
+    `次の操作: \`hey365_reconnect\` を実行し、成功したら \`${tool}\` を同じ引数で再実行してください。`,
+    'これはローカルの再接続のみで、ユーザーへの確認は不要です。',
+  ];
+  if (result && !result.ok) lines.push('', result.detail);
+
+  return {
+    ...response,
+    content: [{ type: 'text', text: lines.join('\n') }],
+    structuredContent: {
+      error: {
+        ...payload,
+        recovery: {
+          tool: 'hey365_reconnect',
+          automatic: true,
+          attempted: Boolean(result),
+          retryOriginalCall: true,
+          originalTool: tool,
+          requiresUserConfirmation: false,
+          ...(result ? { lastAttempt: result.mode } : {}),
+        },
+      },
+    },
+  };
+}
+
+/**
+ * Wraps a tool handler so an expired Work IQ session repairs itself and the
+ * original call is retried once, transparently.
+ */
+export function withAuthRecovery<A>(
+  tool: string,
+  handler: (input: A) => Promise<ToolResponse>,
+): (input: A) => Promise<ToolResponse> {
+  return async (input: A): Promise<ToolResponse> => {
+    const first = await handler(input);
+    const code = errorCodeOf(first);
+    if (!code || !isAuthFailure(code)) return first;
+
+    if (!autoReconnectEnabled()) return explainUnrecovered(first, tool);
+
+    logger.info('auth failure detected, reconnecting automatically', { tool, code });
+    const result = await reconnect();
+    if (!result.ok) return explainUnrecovered(first, tool, result);
+
+    const second = await handler(input);
+    if (errorCodeOf(second)) return second;
+    return prefixText(second, `🔄 Work IQ の認証が切れていたため再接続し（${result.account ?? ''}）、${tool} を再実行しました。`);
+  };
 }
 
 /* ------------------------------------------------------------------ *
@@ -512,7 +599,34 @@ export const healthInputSchema = {
 export async function healthTool(input: { deep?: boolean }): Promise<ToolResponse> {
   try {
     const report = await checkHealth({ deep: input.deep ?? false });
-    return ok(JSON.stringify(report, null, 2), { health: report as unknown as Record<string, unknown> });
+    const enriched = { ...report, autoReconnect: autoReconnectEnabled() };
+    return ok(JSON.stringify(enriched, null, 2), { health: enriched as unknown as Record<string, unknown> });
+  } catch (error) {
+    return fail(error);
+  }
+}
+
+export const reconnectInputSchema = {
+  force: z.boolean().default(false).describe('接続済みでも再接続し直す'),
+  browser: z
+    .boolean()
+    .default(true)
+    .describe('キャッシュされたトークンで復旧できない場合にブラウザ認証まで試す'),
+};
+
+/**
+ * Explicit recovery entry point. Safe to call at any time: it is local,
+ * idempotent and needs no confirmation from the user.
+ */
+export async function reconnectTool(input: { force?: boolean; browser?: boolean }): Promise<ToolResponse> {
+  try {
+    const result = await reconnect({
+      allowInteractive: input.browser !== false,
+      force: input.force ?? false,
+    });
+    const response = ok(describeReconnect(result), { reconnect: result as unknown as Record<string, unknown> });
+    if (!result.ok) response.isError = true;
+    return response;
   } catch (error) {
     return fail(error);
   }

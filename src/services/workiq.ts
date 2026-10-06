@@ -20,6 +20,22 @@ export interface RunOptions {
   interactive?: boolean;
 }
 
+/**
+ * Under the MCP stdio transport the parent's stdin carries JSON-RPC frames, so
+ * a child spawned with `stdio: inherit` would race the transport for those
+ * bytes. Interactive spawning is therefore only honoured from the CLI.
+ */
+type RuntimeMode = 'cli' | 'mcp';
+let runtimeMode: RuntimeMode = 'cli';
+
+export function setRuntimeMode(mode: RuntimeMode): void {
+  runtimeMode = mode;
+}
+
+export function isInteractiveRuntime(): boolean {
+  return runtimeMode === 'cli';
+}
+
 const DEFAULT_TIMEOUT_MS = Number(process.env.HEY365_WORKIQ_TIMEOUT_MS ?? 120_000);
 const WORKIQ_PACKAGE = process.env.HEY365_WORKIQ_PACKAGE ?? '@microsoft/workiq@latest';
 
@@ -182,10 +198,11 @@ export async function runWorkIq(args: string[], options: RunOptions = {}): Promi
   logger.debug('workiq exec', { via: resolved.via, args: args[0] });
 
   const spawned = toSpawnTarget(resolved.command, fullArgs);
+  const inheritStdin = Boolean(options.interactive) && isInteractiveRuntime();
 
   return await new Promise<RunResult>((resolve, reject) => {
     const child = spawn(spawned.command, spawned.args, {
-      stdio: options.interactive ? ['inherit', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
+      stdio: [inheritStdin ? 'inherit' : 'ignore', 'pipe', 'pipe'],
       shell: false,
       windowsHide: true,
       windowsVerbatimArguments: spawned.verbatim,

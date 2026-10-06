@@ -26,12 +26,12 @@ const NEXT_STEPS: Record<Hey365ErrorCode, { ja: string; en: string }> = {
     en: 'Work IQ CLI was not found. Run `hey365_setup`, or install it with `npm i -g @microsoft/workiq`.',
   },
   WORKIQ_NOT_AUTHENTICATED: {
-    ja: 'Work IQ の認証が必要です。`hey365_setup` を実行するとブラウザ認証を開始します。',
-    en: 'Work IQ needs to sign in. Run `hey365_setup` to start browser-based authentication.',
+    ja: 'Work IQ の認証が切れています。`hey365_reconnect` を実行して再接続し、直前のツールをそのまま再実行してください（ユーザーへの確認は不要です）。',
+    en: 'The Work IQ sign-in is no longer valid. Call `hey365_reconnect`, then re-run the previous tool with the same arguments. No need to ask the user first.',
   },
   WORKIQ_AUTH_EXPIRED: {
-    ja: 'Work IQ の認証が期限切れです。`hey365_setup` で再ログインしてください。',
-    en: 'Your Work IQ session expired. Run `hey365_setup` to sign in again.',
+    ja: 'Work IQ の認証が期限切れです。`hey365_reconnect` を実行して再接続し、直前のツールをそのまま再実行してください（ユーザーへの確認は不要です）。',
+    en: 'The Work IQ session expired. Call `hey365_reconnect`, then re-run the previous tool with the same arguments. No need to ask the user first.',
   },
   WORKIQ_ADMIN_CONSENT_REQUIRED: {
     ja: 'テナント管理者の同意が必要です。管理者に `npx @microsoft/workiq auth consent` の実行を依頼してください。',
@@ -104,6 +104,7 @@ export class Hey365Error extends Error {
     nextStep: string;
     nextStepEn: string;
     detail?: string;
+    recovery?: RecoveryHint;
   } {
     return {
       code: this.code,
@@ -111,8 +112,40 @@ export class Hey365Error extends Error {
       nextStep: this.nextStep('ja'),
       nextStepEn: this.nextStep('en'),
       ...(this.detail ? { detail: this.detail } : {}),
+      ...(recoveryFor(this.code) ? { recovery: recoveryFor(this.code) as RecoveryHint } : {}),
     };
   }
+}
+
+/**
+ * Machine-readable recovery instruction. Clients that only read
+ * `structuredContent` still learn that the failure is self-healing and which
+ * tool fixes it, so they stop bouncing the problem back to the user.
+ */
+export interface RecoveryHint {
+  /** Tool the client should call before retrying. */
+  tool: 'hey365_reconnect';
+  /** Hey365 already attempted this automatically before failing. */
+  automatic: boolean;
+  /** Re-running the original tool unchanged is expected to succeed. */
+  retryOriginalCall: boolean;
+  /** Recovery needs no user confirmation. */
+  requiresUserConfirmation: false;
+}
+
+/** Auth failures Hey365 can repair by itself. */
+export function isAuthFailure(code: Hey365ErrorCode): boolean {
+  return code === 'WORKIQ_NOT_AUTHENTICATED' || code === 'WORKIQ_AUTH_EXPIRED';
+}
+
+export function recoveryFor(code: Hey365ErrorCode): RecoveryHint | undefined {
+  if (!isAuthFailure(code)) return undefined;
+  return {
+    tool: 'hey365_reconnect',
+    automatic: true,
+    retryOriginalCall: true,
+    requiresUserConfirmation: false,
+  };
 }
 
 export function asHey365Error(error: unknown): Hey365Error {
@@ -144,10 +177,14 @@ export function classifyFailure(raw: string, statusCode?: number): Hey365ErrorCo
     text.includes('aadsts50076') ||
     text.includes('aadsts50079') ||
     text.includes('aadsts700082') ||
+    text.includes('aadsts700081') ||
+    text.includes('aadsts50173') ||
     text.includes('interaction_required') ||
+    text.includes('msaluirequired') ||
     text.includes('invalid_grant') ||
     text.includes('token expired') ||
-    text.includes('token is expired')
+    text.includes('token is expired') ||
+    text.includes('refresh token has expired')
   ) {
     return 'WORKIQ_AUTH_EXPIRED';
   }
@@ -163,10 +200,14 @@ export function classifyFailure(raw: string, statusCode?: number): Hey365ErrorCo
 
   if (
     text.includes('no cached account') ||
+    text.includes('no account found') ||
     text.includes('not signed in') ||
     text.includes('please log in') ||
+    text.includes('please sign in') ||
     text.includes('auth login') ||
     text.includes('unauthenticated') ||
+    text.includes('invalidauthenticationtoken') ||
+    text.includes('failed to acquire token') ||
     statusCode === 401
   ) {
     return 'WORKIQ_NOT_AUTHENTICATED';

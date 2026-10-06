@@ -192,6 +192,7 @@ node dist/index.js schedule add --at 08:30     # print the command only
 node dist/index.js schedule add --at 08:30 --apply
 node dist/index.js session "Fabric 定例"
 node dist/index.js health --deep
+node dist/index.js reconnect                   # re-establish the Work IQ sign-in
 ```
 
 ## Tools
@@ -209,6 +210,7 @@ node dist/index.js health --deep
 | `hey365_mutes` | – | List everything currently hidden |
 | `hey365_schedule` | `action` (`list`/`add`/`remove`), `job`, `at`, `weekdaysOnly`, `apply` | Register, remove or list scheduled digest runs |
 | `hey365_health` | `deep` | Connection, authentication, read/write status |
+| `hey365_reconnect` | `force`, `browser` | Re-establish the Work IQ sign-in. Called automatically when a session expires |
 | `hey365_setup` | `interactive` | Install + authenticate Work IQ |
 | `hey365_install` | `clients`, `dryRun` | Register Hey365 with other MCP clients |
 
@@ -236,6 +238,9 @@ node dist/index.js health --deep
 | `HEY365_WORKIQ_COMMAND` | auto | Override how the Work IQ CLI is launched |
 | `HEY365_WORKIQ_ACCOUNT` | – | Account to use when several are signed in |
 | `HEY365_WORKIQ_TIMEOUT_MS` | `120000` | Per-call timeout |
+| `HEY365_AUTO_RECONNECT` | `on` | Set to `off`/`0` to disable automatic reconnection when the session expires |
+| `HEY365_RECONNECT_TIMEOUT_MS` | `120000` | Time budget for an automatic `workiq auth login` |
+| `HEY365_RECONNECT_COOLDOWN_MS` | `60000` | How long to wait before retrying after a failed reconnect |
 | `HEY365_LOG_LEVEL` | `info` | `silent`/`error`/`warn`/`info`/`debug` |
 | `HEY365_STATE_FILE` | `~/.hey365/state.json` | Where drafts are persisted |
 
@@ -246,7 +251,7 @@ Run `node dist/index.js health` first. Every failure maps to a code with a concr
 | Code | Fix |
 |---|---|
 | `WORKIQ_NOT_INSTALLED` | `node dist/index.js setup`, or `npm i -g @microsoft/workiq` |
-| `WORKIQ_NOT_AUTHENTICATED` / `WORKIQ_AUTH_EXPIRED` | `node dist/index.js setup` and sign in through the browser |
+| `WORKIQ_NOT_AUTHENTICATED` / `WORKIQ_AUTH_EXPIRED` | Usually recovers on its own. If it persists, run `node dist/index.js reconnect` (or tell your assistant "reconnect to Work IQ") |
 | `WORKIQ_EULA_REQUIRED` | `npx @microsoft/workiq accept-eula` |
 | `WORKIQ_ADMIN_CONSENT_REQUIRED` | Ask a tenant admin to run `npx @microsoft/workiq auth consent` |
 | `WORKIQ_CONNECTION_ERROR` | Check the network, then retry |
@@ -256,6 +261,26 @@ Run `node dist/index.js health` first. Every failure maps to a code with a concr
 | `DRAFT_MISMATCH` | The draft changed after you saw it — review and send again |
 
 On Windows, sign-in can fail inside the broker (WAM). `setup` disables it automatically (`workiq config set disableBrokeredAuth=true`) and falls back to browser authentication.
+
+### When the session expires
+
+Work IQ tokens expire after hours or days. Hey365 **handles that itself** instead of asking you to re-authenticate:
+
+1. When a tool hits an authentication failure, Hey365 runs `workiq auth login` right there. If the token cache is still usable this completes immediately, with no browser.
+2. Once reconnected it **re-runs the original tool with the same arguments** and prefixes the result with a note that it reconnected.
+3. Only if reconnecting fails does it return an error — carrying a machine-readable `recovery` hint telling the assistant to call `hey365_reconnect`.
+
+Concurrent failures share a single `auth login` (single-flight), and after a failed attempt Hey365 waits `HEY365_RECONNECT_COOLDOWN_MS` (60s by default) before trying again.
+
+To do it manually, tell your assistant "**reconnect to Work IQ**" or run:
+
+```bash
+node dist/index.js reconnect              # no-op when already connected
+node dist/index.js reconnect --force      # re-establish even when connected
+node dist/index.js reconnect --no-browser # cache only, never open a browser
+```
+
+Set `HEY365_AUTO_RECONNECT=0` to turn automatic reconnection off.
 
 ## Development
 

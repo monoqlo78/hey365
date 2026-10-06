@@ -192,6 +192,7 @@ node dist/index.js schedule add --at 08:30     # 内容を表示するだけ
 node dist/index.js schedule add --at 08:30 --apply
 node dist/index.js session "Fabric 定例"
 node dist/index.js health --deep
+node dist/index.js reconnect                   # Work IQ の認証を貼り直す
 ```
 
 ## ツール一覧
@@ -209,6 +210,7 @@ node dist/index.js health --deep
 | `hey365_mutes` | – | いま隠している項目の一覧 |
 | `hey365_schedule` | `action`（`list`/`add`/`remove`）, `job`, `at`, `weekdaysOnly`, `apply` | ダイジェストの定期実行を登録・解除・一覧 |
 | `hey365_health` | `deep` | 接続・認証・読み書き権限の状態 |
+| `hey365_reconnect` | `force`, `browser` | Work IQ の認証を貼り直す。認証切れ時は自動で呼ばれる |
 | `hey365_setup` | `interactive` | Work IQ の導入と認証 |
 | `hey365_install` | `clients`, `dryRun` | 他の MCP クライアントへ Hey365 を登録 |
 
@@ -236,6 +238,9 @@ node dist/index.js health --deep
 | `HEY365_WORKIQ_COMMAND` | 自動 | Work IQ CLI の起動方法を上書き |
 | `HEY365_WORKIQ_ACCOUNT` | – | 複数アカウント時に使用するアカウント |
 | `HEY365_WORKIQ_TIMEOUT_MS` | `120000` | 1回あたりのタイムアウト |
+| `HEY365_AUTO_RECONNECT` | `on` | `off`/`0` で認証切れ時の自動再接続を無効化 |
+| `HEY365_RECONNECT_TIMEOUT_MS` | `120000` | 自動再接続（`workiq auth login`）の上限時間 |
+| `HEY365_RECONNECT_COOLDOWN_MS` | `60000` | 再接続に失敗したあと、次に試すまで待つ時間 |
 | `HEY365_LOG_LEVEL` | `info` | `silent`/`error`/`warn`/`info`/`debug` |
 | `HEY365_STATE_FILE` | `~/.hey365/state.json` | 返信案の保存先 |
 
@@ -246,7 +251,7 @@ node dist/index.js health --deep
 | コード | 対処 |
 |---|---|
 | `WORKIQ_NOT_INSTALLED` | `node dist/index.js setup`、または `npm i -g @microsoft/workiq` |
-| `WORKIQ_NOT_AUTHENTICATED` / `WORKIQ_AUTH_EXPIRED` | `node dist/index.js setup` でブラウザからサインイン |
+| `WORKIQ_NOT_AUTHENTICATED` / `WORKIQ_AUTH_EXPIRED` | 通常は自動で再接続されます。残った場合は `node dist/index.js reconnect`（AI には「Work IQ につなぎ直して」） |
 | `WORKIQ_EULA_REQUIRED` | `npx @microsoft/workiq accept-eula` |
 | `WORKIQ_ADMIN_CONSENT_REQUIRED` | テナント管理者に `npx @microsoft/workiq auth consent` を依頼 |
 | `WORKIQ_CONNECTION_ERROR` | ネットワークを確認して再実行 |
@@ -256,6 +261,26 @@ node dist/index.js health --deep
 | `DRAFT_MISMATCH` | 返信案が更新されています。内容を確認して送り直してください |
 
 Windows では、ブローカー認証（WAM）でサインインに失敗することがあります。`setup` が自動的に無効化（`workiq config set disableBrokeredAuth=true`）し、ブラウザ認証にフォールバックします。
+
+### 認証が切れたとき
+
+Work IQ のトークンは数時間〜数日で失効します。Hey365 はこれを**自分で処理します**。
+
+1. ツール実行中に認証切れを検知したら、Hey365 がその場で `workiq auth login` を実行します（トークンキャッシュが生きていればブラウザは開かず即座に完了します）。
+2. 再接続できたら、**元のツールを同じ引数でもう一度実行**し、結果の先頭に再接続した旨を表示します。
+3. 再接続できなかったときだけ、エラーに「`hey365_reconnect` を実行してください」という復旧手順（`recovery`）を添えて返します。
+
+同時に複数のツールが失敗しても `auth login` は1本しか走りません（単一フライト）。失敗した直後は `HEY365_RECONNECT_COOLDOWN_MS`（既定60秒）の間、再試行しません。
+
+手動でやり直したいときは AI に「**Work IQ につなぎ直して**」と言うか、ターミナルで次を実行します。
+
+```bash
+node dist/index.js reconnect              # 接続済みなら何もしない
+node dist/index.js reconnect --force      # 接続済みでも貼り直す
+node dist/index.js reconnect --no-browser # ブラウザを開かず、キャッシュだけで試す
+```
+
+自動再接続を止めたい場合は `HEY365_AUTO_RECONNECT=0` を設定してください。
 
 ## 開発
 

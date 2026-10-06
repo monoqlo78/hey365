@@ -21,6 +21,8 @@ export interface StoredState {
   sent: Array<{ id: string; index: number; sentAt: string; target: string }>;
   /** Conversations the user chose to hide, keyed by conversation id. */
   muted: MuteEntry[];
+  /** Last Work IQ account that authenticated, used for silent reconnects. */
+  lastAccount?: string;
 }
 
 export interface MuteEntry {
@@ -88,6 +90,23 @@ export function storeTriage(result: TriageResult): void {
 
 export function getTriage(): TriageResult | undefined {
   return loadState().triage;
+}
+
+/**
+ * Remembers which account last authenticated so a silent reconnect can pass
+ * `--account` and pick the right cached token on multi-account machines.
+ */
+export function rememberAccount(account: string | undefined): void {
+  const trimmed = account?.trim();
+  if (!trimmed) return;
+  const state = loadState();
+  if (state.lastAccount === trimmed) return;
+  state.lastAccount = trimmed;
+  saveState(state);
+}
+
+export function lastKnownAccount(): string | undefined {
+  return loadState().lastAccount;
 }
 
 export function storeSession(summary: SessionSummary): void {

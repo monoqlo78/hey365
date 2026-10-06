@@ -12,6 +12,8 @@ import {
   healthTool,
   installInputSchema,
   installTool,
+  reconnectInputSchema,
+  reconnectTool,
   mutesInputSchema,
   mutesTool,
   sendInputSchema,
@@ -26,7 +28,9 @@ import {
   scheduleTool,
   triageInputSchema,
   triageTool,
+  withAuthRecovery,
 } from './tools/index.js';
+import { setRuntimeMode } from './services/workiq.js';
 import { logger } from './utils/logger.js';
 
 export const HEY365_VERSION = '0.2.0';
@@ -49,6 +53,15 @@ const INSTRUCTIONS = `Hey365 は Microsoft 365 (Outlook / Teams / Calendar) を�
 - 「何を隠してたっけ」 -> hey365_mutes
 - 「毎朝8時にダイジェストを出して」 -> hey365_schedule (action=add)
 - 「Xの件どうなってる?」「Yさんとのやりとりを見せて」 -> hey365_find
+- 「Work IQ につなぎ直して」「再認証して」 -> hey365_reconnect
+
+認証エラーの扱い（重要）:
+Work IQ のトークンは定期的に失効します。Hey365 は認証切れを検知すると自動的に再接続し、
+元のツールを再実行します。それでも WORKIQ_NOT_AUTHENTICATED / WORKIQ_AUTH_EXPIRED が
+返った場合は、ユーザーに再認証を依頼せず、その場で hey365_reconnect を呼び出し、
+成功したら元のツールを同じ引数で再実行してください。再接続はローカルで完結する
+冪等な操作であり、ユーザーの確認は不要です。エラーの structuredContent.error.recovery に
+呼ぶべきツールが入っています。
 
 重要: hey365_triage は下書きまでしか作りません。ユーザーが明示的に送信を指示した場合のみ
 hey365_send を呼び出してください。ユーザーの確認なしに送信してはいけません。`;
@@ -70,7 +83,7 @@ export function createServer(): McpServer {
         '過去N時間(既定36)の Outlook / Teams / 会議を調査し、自分が返信・対応すべき用件だけを抽出して返信案を作成する。送信はしない。',
       inputSchema: triageInputSchema,
     },
-    triageTool,
+    withAuthRecovery('hey365', triageTool),
   );
 
   server.registerTool(
@@ -80,7 +93,7 @@ export function createServer(): McpServer {
       description: 'hey365 と同じ。過去N時間の M365 を調査して対応が必要な項目を抽出する。',
       inputSchema: triageInputSchema,
     },
-    triageTool,
+    withAuthRecovery('hey365_triage', triageTool),
   );
 
   server.registerTool(
@@ -91,7 +104,7 @@ export function createServer(): McpServer {
         '会議 / Teams スレッド / Outlook 会話を要約し、決定事項・Action Items・自分の宿題・未解決事項・返信要否を出力する。',
       inputSchema: sessionInputSchema,
     },
-    sessionTool,
+    withAuthRecovery('hey365_session', sessionTool),
   );
 
   server.registerTool(
@@ -101,7 +114,7 @@ export function createServer(): McpServer {
       description: '既に提示した返信案を自然言語の指示で修正する（柔らかく / 英語に / 短く など）。',
       inputSchema: draftInputSchema,
     },
-    draftTool,
+    withAuthRecovery('hey365_draft', draftTool),
   );
 
   server.registerTool(
@@ -112,7 +125,7 @@ export function createServer(): McpServer {
         'ユーザーが明示的に指示した返信案だけを、元のスレッドへの返信として送信する。新規スレッドは作らない。',
       inputSchema: sendInputSchema,
     },
-    sendTool,
+    withAuthRecovery('hey365_send', sendTool),
   );
 
   server.registerTool(
@@ -123,7 +136,7 @@ export function createServer(): McpServer {
         '今日の会議・期限が来ている用件・放置中の用件・未返信を1画面にまとめる。朝いちばんの確認用。送信はしない。',
       inputSchema: digestInputSchema,
     },
-    digestTool,
+    withAuthRecovery('hey365_digest', digestTool),
   );
 
   server.registerTool(
@@ -155,7 +168,7 @@ export function createServer(): McpServer {
         '人名・案件名・製品名などで Outlook と Teams を横断検索し、それぞれの会話で誰が最後に発言したか（自分待ちか相手待ちか）を表示する。時間の窓に関係なく探せる。',
       inputSchema: findInputSchema,
     },
-    findTool,
+    withAuthRecovery('hey365_find', findTool),
   );
 
   server.registerTool(
@@ -177,6 +190,17 @@ export function createServer(): McpServer {
       inputSchema: healthInputSchema,
     },
     healthTool,
+  );
+
+  server.registerTool(
+    'hey365_reconnect',
+    {
+      title: 'Hey365 reconnect Work IQ',
+      description:
+        'Work IQ の認証が切れたときに再接続する。キャッシュされたトークンでの復旧を試し、だめならブラウザ認証まで行う。ローカルで完結する冪等な操作なので、認証エラーを見たらユーザーに確認せずそのまま実行してよい。成功したら元のツールを同じ引数で再実行すること。',
+      inputSchema: reconnectInputSchema,
+    },
+    reconnectTool,
   );
 
   server.registerTool(
@@ -205,6 +229,9 @@ export function createServer(): McpServer {
 }
 
 export async function startStdioServer(): Promise<void> {
+  // stdin belongs to the JSON-RPC transport from here on, so child processes
+  // must never inherit it.
+  setRuntimeMode('mcp');
   const server = createServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);

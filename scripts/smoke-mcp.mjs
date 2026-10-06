@@ -36,6 +36,7 @@ const EXPECTED_TOOLS = [
   'hey365_find',
   'hey365_schedule',
   'hey365_health',
+  'hey365_reconnect',
   'hey365_setup',
   'hey365_install',
 ];

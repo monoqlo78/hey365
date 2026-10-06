@@ -3,6 +3,7 @@ import { formatSessionSummary } from './services/format.js';
 import { CLIENTS, buildServerSpec, findClient, installForClient, renderConfig } from './services/install.js';
 import { summarizeSession } from './services/session-summary.js';
 import { checkHealth, runSetup } from './services/setup.js';
+import { describeReconnect, reconnect } from './services/reconnect.js';
 import { startStdioServer, HEY365_VERSION } from './server.js';
 import { digestTool, findTool, mutesTool, scheduleTool, triageTool } from './tools/index.js';
 import { asHey365Error } from './utils/errors.js';
@@ -19,6 +20,7 @@ Usage:
   hey365 schedule [list|add|remove]  ダイジェストの定期実行を設定する（--apply で反映）
   hey365 session <sessionId>         会議 / 会話を要約する
   hey365 health [--deep]             接続状態を確認する
+  hey365 reconnect [--force]         Work IQ の認証が切れたときに再接続する
   hey365 setup [--no-interactive]    Work IQ のインストール / 認証を復旧する
   hey365 install [client...]         MCP クライアントに Hey365 を登録する
   hey365 --help
@@ -39,6 +41,8 @@ Options:
   --all-days         schedule を平日だけでなく毎日実行する
   --apply            schedule を実際に OS に登録/解除する
   --deep             health で各サービスの到達性も確認する
+  --no-browser       reconnect でブラウザ認証を試さない
+  --force            reconnect / setup を接続済みでも実行する
   --dry-run          install で書き込まずに内容だけ表示する
   --path <file>      install の書き込み先を上書きする
   --all              install で対応クライアント全てに書き込む
@@ -53,6 +57,9 @@ Environment:
   HEY365_HOLIDAYS          追加の非稼働日（YYYY-MM-DD のカンマ区切り）
   HEY365_WORKIQ_COMMAND    Work IQ CLI の起動コマンドを上書きする
   HEY365_WORKIQ_ACCOUNT    使用するアカウント（複数アカウント時）
+  HEY365_AUTO_RECONNECT    off で認証切れ時の自動再接続を無効化（既定 on）
+  HEY365_RECONNECT_TIMEOUT_MS  自動再接続の上限時間（既定 120000）
+  HEY365_RECONNECT_COOLDOWN_MS 再接続失敗後の待機時間（既定 60000）
   HEY365_LOG_LEVEL         silent|error|warn|info|debug
   HEY365_STATE_FILE        下書きの保存先
 `;
@@ -237,6 +244,16 @@ async function main(): Promise<void> {
         process.stdout.write(`${step.ok ? '✅' : '❌'} ${step.step}${step.detail ? ` — ${step.detail}` : ''}\n`);
       }
       process.stdout.write(`\n${result.message}\n`);
+      process.exitCode = result.ok ? 0 : 1;
+      return;
+    }
+
+    case 'reconnect': {
+      const result = await reconnect({
+        allowInteractive: args.flags['no-browser'] !== true,
+        force: args.flags.force === true,
+      });
+      process.stdout.write(`${describeReconnect(result)}\n`);
       process.exitCode = result.ok ? 0 : 1;
       return;
     }

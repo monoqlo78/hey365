@@ -2,6 +2,7 @@ import { Hey365Error, asHey365Error, classifyFailure } from '../utils/errors.js'
 import { logger } from '../utils/logger.js';
 import { timezone } from '../utils/time.js';
 import { describeCommand, resetCommandCache, resolveWorkIqCommand, runWorkIq, tryFetch } from './workiq.js';
+import { rememberAccount } from './store.js';
 import type { GraphUser } from './graph.js';
 
 export interface HealthReport {
@@ -62,6 +63,7 @@ export async function checkHealth(options: { deep?: boolean } = {}): Promise<Hea
   report.authenticated = true;
   report.readAccess = true;
   report.account = me.mail ?? me.userPrincipalName ?? '';
+  rememberAccount(report.account);
 
   if (options.deep) {
     const [mail, chats, events] = await Promise.all([
