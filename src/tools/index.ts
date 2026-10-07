@@ -118,7 +118,10 @@ export function withAuthRecovery<A>(
     if (!autoReconnectEnabled()) return explainUnrecovered(first, tool);
 
     logger.info('auth failure detected, reconnecting automatically', { tool, code });
-    const result = await reconnect();
+    // The handler already proved the session is dead, so `force` skips the
+    // health probe's verdict, and `allowInteractive` lets a dead token cache
+    // escalate to browser sign-in instead of dead-ending on the user.
+    const result = await reconnect({ force: true, allowInteractive: true });
     if (!result.ok) return explainUnrecovered(first, tool, result);
 
     const second = await handler(input);
@@ -616,13 +619,16 @@ export const reconnectInputSchema = {
 
 /**
  * Explicit recovery entry point. Safe to call at any time: it is local,
- * idempotent and needs no confirmation from the user.
+ * idempotent and needs no confirmation from the user. An explicit call always
+ * bypasses the post-failure backoff — being able to retry immediately is the
+ * whole point of a manual override.
  */
 export async function reconnectTool(input: { force?: boolean; browser?: boolean }): Promise<ToolResponse> {
   try {
     const result = await reconnect({
       allowInteractive: input.browser !== false,
       force: input.force ?? false,
+      ignoreCooldown: true,
     });
     const response = ok(describeReconnect(result), { reconnect: result as unknown as Record<string, unknown> });
     if (!result.ok) response.isError = true;

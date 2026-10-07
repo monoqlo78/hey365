@@ -59,7 +59,8 @@ Environment:
   HEY365_WORKIQ_ACCOUNT    使用するアカウント（複数アカウント時）
   HEY365_AUTO_RECONNECT    off で認証切れ時の自動再接続を無効化（既定 on）
   HEY365_RECONNECT_TIMEOUT_MS  自動再接続の上限時間（既定 120000）
-  HEY365_RECONNECT_COOLDOWN_MS 再接続失敗後の待機時間（既定 60000）
+  HEY365_RECONNECT_INTERACTIVE_TIMEOUT_MS  ブラウザ認証の上限時間（既定 180000）
+  HEY365_RECONNECT_COOLDOWN_MS 再接続失敗後の待機時間（既定 60000、連続失敗で倍増）
   HEY365_LOG_LEVEL         silent|error|warn|info|debug
   HEY365_STATE_FILE        下書きの保存先
 `;
@@ -252,6 +253,7 @@ async function main(): Promise<void> {
       const result = await reconnect({
         allowInteractive: args.flags['no-browser'] !== true,
         force: args.flags.force === true,
+        ignoreCooldown: true,
       });
       process.stdout.write(`${describeReconnect(result)}\n`);
       process.exitCode = result.ok ? 0 : 1;

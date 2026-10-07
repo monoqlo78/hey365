@@ -240,7 +240,8 @@ node dist/index.js reconnect                   # re-establish the Work IQ sign-i
 | `HEY365_WORKIQ_TIMEOUT_MS` | `120000` | Per-call timeout |
 | `HEY365_AUTO_RECONNECT` | `on` | Set to `off`/`0` to disable automatic reconnection when the session expires |
 | `HEY365_RECONNECT_TIMEOUT_MS` | `120000` | Time budget for an automatic `workiq auth login` |
-| `HEY365_RECONNECT_COOLDOWN_MS` | `60000` | How long to wait before retrying after a failed reconnect |
+| `HEY365_RECONNECT_INTERACTIVE_TIMEOUT_MS` | `180000` | Time budget once it escalates to browser sign-in |
+| `HEY365_RECONNECT_COOLDOWN_MS` | `60000` | Wait after a failed reconnect; doubles per consecutive failure (capped at 15 min) |
 | `HEY365_LOG_LEVEL` | `info` | `silent`/`error`/`warn`/`info`/`debug` |
 | `HEY365_STATE_FILE` | `~/.hey365/state.json` | Where drafts are persisted |
 
@@ -266,13 +267,14 @@ On Windows, sign-in can fail inside the broker (WAM). `setup` disables it automa
 
 Work IQ tokens expire after hours or days. Hey365 **handles that itself** instead of asking you to re-authenticate:
 
-1. When a tool hits an authentication failure, Hey365 runs `workiq auth login` right there. If the token cache is still usable this completes immediately, with no browser.
-2. Once reconnected it **re-runs the original tool with the same arguments** and prefixes the result with a note that it reconnected.
-3. Only if reconnecting fails does it return an error — carrying a machine-readable `recovery` hint telling the assistant to call `hey365_reconnect`.
+1. When a tool hits an authentication failure, Hey365 reconnects on the spot — **always forcibly**. The tool itself just observed a dead session, so a health probe claiming otherwise is treated as stale and a fresh token is acquired regardless.
+2. It first redeems the cached token (`workiq auth login --account …`). If that cache is still alive this completes in a second or two, with no browser.
+3. If the cache is dead it **escalates to browser sign-in automatically** (disabling WAM/broker first). It never stops to ask you to re-authenticate.
+4. Once reconnected it **re-runs the original tool with the same arguments** and prefixes the result with a note that it reconnected.
 
-Concurrent failures share a single `auth login` (single-flight), and after a failed attempt Hey365 waits `HEY365_RECONNECT_COOLDOWN_MS` (60s by default) before trying again.
+Concurrent failures share a single attempt (single-flight). After a failure Hey365 waits `HEY365_RECONNECT_COOLDOWN_MS` (60s by default), and **that wait doubles with each consecutive failure** (capped at 15 minutes) — now that browser sign-in happens automatically, a cache that cannot be repaired must not keep opening windows.
 
-To do it manually, tell your assistant "**reconnect to Work IQ**" or run:
+To do it manually, tell your assistant "**reconnect to Work IQ**" or run the commands below. An explicit request always ignores the backoff and retries immediately.
 
 ```bash
 node dist/index.js reconnect              # no-op when already connected

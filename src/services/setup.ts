@@ -106,7 +106,9 @@ export interface SetupResult {
  * the recovery path disables brokered auth before falling back to the browser
  * flow. Nothing here ever logs tokens.
  */
-export async function runSetup(options: { interactive?: boolean; force?: boolean } = {}): Promise<SetupResult> {
+export async function runSetup(
+  options: { interactive?: boolean; force?: boolean; loginTimeoutMs?: number } = {},
+): Promise<SetupResult> {
   const steps: SetupStep[] = [];
 
   let health = await checkHealth();
@@ -128,7 +130,7 @@ export async function runSetup(options: { interactive?: boolean; force?: boolean
   steps.push(await disableBrokeredAuth());
 
   if (options.interactive !== false) {
-    steps.push(await login());
+    steps.push(await login(options.loginTimeoutMs));
   } else {
     steps.push({
       step: 'auth-login',
@@ -195,10 +197,10 @@ async function disableBrokeredAuth(): Promise<SetupStep> {
 }
 
 /** Step 2: browser-based sign-in. Never logs the resulting tokens. */
-async function login(): Promise<SetupStep> {
+async function login(timeoutMs = 300_000): Promise<SetupStep> {
   try {
     logger.info('starting Work IQ browser sign-in');
-    const result = await runWorkIq(['auth', 'login'], { timeoutMs: 300_000, interactive: true });
+    const result = await runWorkIq(['auth', 'login'], { timeoutMs, interactive: true });
     return {
       step: 'auth-login',
       ok: result.code === 0,

@@ -119,6 +119,20 @@ describe('withAuthRecovery', () => {
     expect(result.content[0]?.text).toContain('2件');
   });
 
+  it('forces a fresh sign-in and allows browser escalation', async () => {
+    const handler = vi
+      .fn<[unknown], Promise<ToolResponse>>()
+      .mockResolvedValueOnce(authFailure())
+      .mockResolvedValueOnce(success());
+    reconnectMock.mockResolvedValue({ ok: true, mode: 'silent', detail: 'ok', detailEn: 'ok' });
+
+    await withAuthRecovery('hey365', handler)({});
+
+    // The handler already proved the session is dead: a health probe claiming
+    // otherwise is stale, and a dead cache must escalate rather than give up.
+    expect(reconnectMock).toHaveBeenCalledWith({ force: true, allowInteractive: true });
+  });
+
   it('does not retry a second time when the call still fails after reconnecting', async () => {
     const handler = vi.fn(async () => authFailure());
     reconnectMock.mockResolvedValue({

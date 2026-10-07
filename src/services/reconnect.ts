@@ -38,28 +38,66 @@ export interface ReconnectResult {
 export interface ReconnectOptions {
   /**
    * Allow the full recovery path (disable brokered auth, then browser
-   * sign-in). Automatic retries stay silent-only; the explicit
-   * `hey365_reconnect` tool opts into this.
+   * sign-in) when the cached token can no longer be redeemed.
    */
   allowInteractive?: boolean;
-  /** Reconnect even when the current session still works. */
+  /**
+   * Reconnect even when `checkHealth` reports a working session. Automatic
+   * recovery always sets this: the caller already *observed* an auth failure,
+   * so a health probe that disagrees is stale, and retrying without a fresh
+   * token would simply fail a second time.
+   */
   force?: boolean;
+  /**
+   * Skip the post-failure backoff. Only an explicit user request sets this —
+   * the backoff is what stops a dead token cache from opening a browser on
+   * every single tool call.
+   */
+  ignoreCooldown?: boolean;
 }
 
 const DEFAULT_SILENT_TIMEOUT_MS = 120_000;
+const DEFAULT_INTERACTIVE_TIMEOUT_MS = 180_000;
 const DEFAULT_COOLDOWN_MS = 60_000;
+const MAX_COOLDOWN_MS = 15 * 60_000;
 
 let inFlight: Promise<ReconnectResult> | undefined;
 let lastFailureAt = 0;
+let consecutiveFailures = 0;
 
 function silentTimeoutMs(): number {
   const raw = Number(process.env.HEY365_RECONNECT_TIMEOUT_MS);
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_SILENT_TIMEOUT_MS;
 }
 
-function cooldownMs(): number {
+function interactiveTimeoutMs(): number {
+  const raw = Number(process.env.HEY365_RECONNECT_INTERACTIVE_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_INTERACTIVE_TIMEOUT_MS;
+}
+
+function baseCooldownMs(): number {
   const raw = Number(process.env.HEY365_RECONNECT_COOLDOWN_MS);
   return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_COOLDOWN_MS;
+}
+
+/**
+ * Exponential backoff. Browser sign-in is now attempted automatically, so a
+ * genuinely dead cache must not pop a window open once a minute forever.
+ */
+function cooldownMs(): number {
+  const base = baseCooldownMs();
+  if (base === 0 || consecutiveFailures <= 1) return base;
+  return Math.min(base * 2 ** (consecutiveFailures - 1), MAX_COOLDOWN_MS);
+}
+
+function noteFailure(): void {
+  lastFailureAt = Date.now();
+  consecutiveFailures += 1;
+}
+
+function noteSuccess(): void {
+  lastFailureAt = 0;
+  consecutiveFailures = 0;
 }
 
 /** Automatic reconnection is on unless explicitly disabled. */
@@ -69,10 +107,11 @@ export function autoReconnectEnabled(): boolean {
   return !['0', 'off', 'false', 'no'].includes(raw);
 }
 
-/** Test seam: clears the single-flight guard and the failure cooldown. */
+/** Test seam: clears the single-flight guard and the failure backoff. */
 export function resetReconnectState(): void {
   inFlight = undefined;
   lastFailureAt = 0;
+  consecutiveFailures = 0;
 }
 
 /**
@@ -90,7 +129,7 @@ export async function reconnect(options: ReconnectOptions = {}): Promise<Reconne
 async function attempt(options: ReconnectOptions): Promise<ReconnectResult> {
   const health = await checkHealth();
   if (health.authenticated && !options.force) {
-    lastFailureAt = 0;
+    noteSuccess();
     return {
       ok: true,
       mode: 'already-connected',
@@ -101,13 +140,15 @@ async function attempt(options: ReconnectOptions): Promise<ReconnectResult> {
     };
   }
 
+  const wait = cooldownMs();
   const sinceFailure = Date.now() - lastFailureAt;
-  if (!options.force && lastFailureAt > 0 && sinceFailure < cooldownMs()) {
+  if (!options.ignoreCooldown && lastFailureAt > 0 && sinceFailure < wait) {
+    const remaining = Math.ceil((wait - sinceFailure) / 1000);
     return {
       ok: false,
       mode: 'cooldown',
-      detail: `直前の再接続が失敗したため ${Math.ceil((cooldownMs() - sinceFailure) / 1000)} 秒待機中です。ブラウザでのサインインが必要な可能性があります。`,
-      detailEn: `A reconnect attempt failed recently; waiting ${Math.ceil((cooldownMs() - sinceFailure) / 1000)}s before retrying. Browser sign-in may be required.`,
+      detail: `直前の再接続が失敗したため ${remaining} 秒待機中です。すぐにやり直すには \`hey365_reconnect\` を force=true で実行してください。`,
+      detailEn: `A reconnect attempt failed recently; waiting ${remaining}s before retrying. Call \`hey365_reconnect\` with force=true to retry now.`,
       health,
     };
   }
@@ -115,7 +156,7 @@ async function attempt(options: ReconnectOptions): Promise<ReconnectResult> {
   if (await silentLogin()) {
     const after = await checkHealth();
     if (after.authenticated) {
-      lastFailureAt = 0;
+      noteSuccess();
       return {
         ok: true,
         mode: 'silent',
@@ -128,9 +169,10 @@ async function attempt(options: ReconnectOptions): Promise<ReconnectResult> {
   }
 
   if (options.allowInteractive) {
-    const setup = await runSetup({ interactive: true, force: true });
+    logger.info('cached token could not be redeemed, escalating to browser sign-in');
+    const setup = await runSetup({ interactive: true, force: true, loginTimeoutMs: interactiveTimeoutMs() });
     if (setup.ok) {
-      lastFailureAt = 0;
+      noteSuccess();
       return {
         ok: true,
         mode: 'interactive',
@@ -140,7 +182,7 @@ async function attempt(options: ReconnectOptions): Promise<ReconnectResult> {
         health: setup.health,
       };
     }
-    lastFailureAt = Date.now();
+    noteFailure();
     return {
       ok: false,
       mode: 'failed',
@@ -150,12 +192,12 @@ async function attempt(options: ReconnectOptions): Promise<ReconnectResult> {
     };
   }
 
-  lastFailureAt = Date.now();
+  noteFailure();
   return {
     ok: false,
     mode: 'failed',
-    detail: '自動再接続に失敗しました。`hey365_reconnect` を実行するとブラウザ認証まで試します。',
-    detailEn: 'Automatic reconnect failed. Call `hey365_reconnect` to also attempt browser sign-in.',
+    detail: 'キャッシュされたトークンでは再接続できませんでした。`hey365_reconnect` を実行するとブラウザ認証まで試します。',
+    detailEn: 'The cached token could not be redeemed. Call `hey365_reconnect` to also attempt browser sign-in.',
     health,
   };
 }
