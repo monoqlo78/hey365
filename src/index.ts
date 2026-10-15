@@ -61,6 +61,9 @@ Environment:
   HEY365_RECONNECT_TIMEOUT_MS  自動再接続の上限時間（既定 120000）
   HEY365_RECONNECT_INTERACTIVE_TIMEOUT_MS  ブラウザ認証の上限時間（既定 180000）
   HEY365_RECONNECT_COOLDOWN_MS 再接続失敗後の待機時間（既定 60000、連続失敗で倍増）
+  HEY365_READINESS_ATTEMPTS    再接続後の実読取り確認回数（既定 5、最大 10）
+  HEY365_READINESS_INTERVAL_MS 確認間隔（既定 5000）
+  HEY365_READINESS_PROBE_TIMEOUT_MS 1回の実読取り確認の上限時間（既定 30000）
   HEY365_LOG_LEVEL         silent|error|warn|info|debug
   HEY365_STATE_FILE        下書きの保存先
 `;

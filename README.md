@@ -242,6 +242,9 @@ node dist/index.js reconnect                   # re-establish the Work IQ sign-i
 | `HEY365_RECONNECT_TIMEOUT_MS` | `120000` | Time budget for an automatic `workiq auth login` |
 | `HEY365_RECONNECT_INTERACTIVE_TIMEOUT_MS` | `180000` | Time budget once it escalates to browser sign-in |
 | `HEY365_RECONNECT_COOLDOWN_MS` | `60000` | Wait after a failed reconnect; doubles per consecutive failure (capped at 15 min) |
+| `HEY365_READINESS_ATTEMPTS` | `5` | Number of real Outlook/Teams/Calendar read checks after reconnecting (max 10) |
+| `HEY365_READINESS_INTERVAL_MS` | `5000` | Delay before the next read check when a surface is not ready |
+| `HEY365_READINESS_PROBE_TIMEOUT_MS` | `30000` | Time budget for each batched read check |
 | `HEY365_LOG_LEVEL` | `info` | `silent`/`error`/`warn`/`info`/`debug` |
 | `HEY365_STATE_FILE` | `~/.hey365/state.json` | Where drafts are persisted |
 
@@ -267,12 +270,13 @@ On Windows, sign-in can fail inside the broker (WAM). `setup` disables it automa
 
 Work IQ tokens expire after hours or days. Hey365 **handles that itself** instead of asking you to re-authenticate:
 
-1. When a tool hits an authentication failure, Hey365 reconnects on the spot — **always forcibly**. The tool itself just observed a dead session, so a health probe claiming otherwise is treated as stale and a fresh token is acquired regardless.
+1. When a tool hits an authentication failure, Hey365 reconnects on the spot with **`force=true`**. The tool itself just observed a dead session, so it skips the pre-login health probe and always acquires a fresh token.
 2. It first redeems the cached token (`workiq auth login --account …`). If that cache is still alive this completes in a second or two, with no browser.
 3. If the cache is dead it **escalates to browser sign-in automatically** (disabling WAM/broker first). It never stops to ask you to re-authenticate.
-4. Once reconnected it **re-runs the original tool with the same arguments** and prefixes the result with a note that it reconnected.
+4. A successful login command is not enough. Hey365 performs real reads against Outlook, Teams and Calendar in one batch, retrying unavailable surfaces up to five times at five-second intervals. An empty mailbox or chat list counts as a successful read; only an API failure counts as unavailable.
+5. Only after all three surfaces are readable does it **re-run the original tool with the same arguments**, prefixing the result with the reconnect and readiness-attempt details.
 
-Concurrent failures share a single attempt (single-flight). After a failure Hey365 waits `HEY365_RECONNECT_COOLDOWN_MS` (60s by default), and **that wait doubles with each consecutive failure** (capped at 15 minutes) — now that browser sign-in happens automatically, a cache that cannot be repaired must not keep opening windows.
+Concurrent failures share a single attempt (single-flight). Hey365 only reports recovery failure after all five real-read checks fail. It then waits `HEY365_RECONNECT_COOLDOWN_MS` (60s by default), and **that wait doubles with each consecutive failure** (capped at 15 minutes) — now that browser sign-in happens automatically, a cache that cannot be repaired must not keep opening windows.
 
 To do it manually, tell your assistant "**reconnect to Work IQ**" or run the commands below. An explicit request always ignores the backoff and retries immediately.
 

@@ -22,7 +22,16 @@ const healthMock = vi.mocked(checkHealth);
 const setupMock = vi.mocked(runSetup);
 const workIqMock = vi.mocked(runWorkIq);
 
-const connected = { authenticated: true, account: 'user@example.com' } as never;
+const connected = {
+  authenticated: true,
+  account: 'user@example.com',
+  surfaces: { outlook: true, teams: true, calendar: true },
+} as never;
+const teamsPending = {
+  authenticated: true,
+  account: 'user@example.com',
+  surfaces: { outlook: true, teams: false, calendar: true },
+} as never;
 const disconnected = { authenticated: false } as never;
 
 function loginResult(code: number) {
@@ -36,6 +45,8 @@ describe('reconnect', () => {
     setupMock.mockReset();
     workIqMock.mockReset();
     delete process.env.HEY365_RECONNECT_COOLDOWN_MS;
+    process.env.HEY365_READINESS_INTERVAL_MS = '0';
+    process.env.HEY365_READINESS_ATTEMPTS = '3';
   });
 
   it('skips the work entirely when the session is healthy', async () => {
@@ -55,6 +66,7 @@ describe('reconnect', () => {
 
     expect(result.mode).toBe('silent');
     expect(workIqMock).toHaveBeenCalledWith(['auth', 'login', '--account', 'user@example.com'], expect.anything());
+    expect(healthMock).toHaveBeenCalledTimes(1);
   });
 
   it('redeems the cached token without touching the browser path', async () => {
@@ -68,7 +80,7 @@ describe('reconnect', () => {
   });
 
   it('escalates to browser sign-in when the cached token is dead', async () => {
-    healthMock.mockResolvedValue(disconnected);
+    healthMock.mockResolvedValueOnce(disconnected).mockResolvedValue(connected);
     workIqMock.mockResolvedValue(loginResult(1));
     setupMock.mockResolvedValue({ ok: true, steps: [], health: connected, message: 'ok' });
 
@@ -88,6 +100,34 @@ describe('reconnect', () => {
 
     expect(result.ok).toBe(false);
     expect(setupMock).not.toHaveBeenCalled();
+  });
+
+  it('waits and probes again until Teams is actually readable', async () => {
+    healthMock
+      .mockResolvedValueOnce(teamsPending)
+      .mockResolvedValueOnce(teamsPending)
+      .mockResolvedValueOnce(connected);
+    workIqMock.mockResolvedValue(loginResult(0));
+
+    const result = await reconnect({ force: true });
+
+    expect(result.mode).toBe('silent');
+    expect(result.readinessAttempts).toBe(3);
+    expect(result.health?.surfaces?.teams).toBe(true);
+    expect(healthMock).toHaveBeenCalledTimes(3);
+    expect(healthMock).toHaveBeenLastCalledWith(expect.objectContaining({ deep: true }));
+  });
+
+  it('does not claim success when a surface is still unavailable after every probe', async () => {
+    healthMock.mockResolvedValue(teamsPending);
+    workIqMock.mockResolvedValue(loginResult(0));
+
+    const result = await reconnect({ force: true });
+
+    expect(result.mode).toBe('failed');
+    expect(result.readinessAttempts).toBe(3);
+    expect(result.detail).toContain('Teams');
+    expect(healthMock).toHaveBeenCalledTimes(3);
   });
 
   it('backs off after a failure instead of retrying on every call', async () => {

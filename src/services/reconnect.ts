@@ -30,6 +30,7 @@ export interface ReconnectResult {
   ok: boolean;
   mode: ReconnectMode;
   account?: string;
+  readinessAttempts?: number;
   detail: string;
   detailEn: string;
   health?: HealthReport;
@@ -59,6 +60,9 @@ export interface ReconnectOptions {
 const DEFAULT_SILENT_TIMEOUT_MS = 120_000;
 const DEFAULT_INTERACTIVE_TIMEOUT_MS = 180_000;
 const DEFAULT_COOLDOWN_MS = 60_000;
+const DEFAULT_READINESS_ATTEMPTS = 5;
+const DEFAULT_READINESS_INTERVAL_MS = 5_000;
+const DEFAULT_READINESS_PROBE_TIMEOUT_MS = 30_000;
 const MAX_COOLDOWN_MS = 15 * 60_000;
 
 let inFlight: Promise<ReconnectResult> | undefined;
@@ -78,6 +82,24 @@ function interactiveTimeoutMs(): number {
 function baseCooldownMs(): number {
   const raw = Number(process.env.HEY365_RECONNECT_COOLDOWN_MS);
   return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_COOLDOWN_MS;
+}
+
+function readinessAttempts(): number {
+  const raw = Number(process.env.HEY365_READINESS_ATTEMPTS);
+  if (!Number.isFinite(raw)) return DEFAULT_READINESS_ATTEMPTS;
+  return Math.min(Math.max(Math.trunc(raw), 1), 10);
+}
+
+function readinessIntervalMs(): number {
+  const raw = Number(process.env.HEY365_READINESS_INTERVAL_MS);
+  if (!Number.isFinite(raw) || raw < 0) return DEFAULT_READINESS_INTERVAL_MS;
+  return raw;
+}
+
+function readinessProbeTimeoutMs(): number {
+  const raw = Number(process.env.HEY365_READINESS_PROBE_TIMEOUT_MS);
+  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_READINESS_PROBE_TIMEOUT_MS;
+  return raw;
 }
 
 /**
@@ -127,17 +149,29 @@ export async function reconnect(options: ReconnectOptions = {}): Promise<Reconne
 }
 
 async function attempt(options: ReconnectOptions): Promise<ReconnectResult> {
-  const health = await checkHealth();
-  if (health.authenticated && !options.force) {
-    noteSuccess();
-    return {
-      ok: true,
-      mode: 'already-connected',
-      ...(health.account ? { account: health.account } : {}),
-      detail: `Work IQ は接続済みです（${health.account ?? ''}）。`,
-      detailEn: `Work IQ is already connected (${health.account ?? ''}).`,
-      health,
-    };
+  // A forced reconnect is only requested after the caller has already
+  // observed an auth/read failure. Probing before login adds one full Graph
+  // round trip and cannot change the decision, so skip directly to login.
+  let health: HealthReport | undefined;
+  if (!options.force) {
+    health = await checkHealth({ deep: true, timeoutMs: readinessProbeTimeoutMs() });
+  }
+  if (health?.authenticated && !options.force) {
+    if (surfacesReady(health)) {
+      noteSuccess();
+      return {
+        ok: true,
+        mode: 'already-connected',
+        ...(health.account ? { account: health.account } : {}),
+        readinessAttempts: 1,
+        detail: `Work IQ は接続済みで、Outlook・Teams・Calendar を読み取れます（${health.account ?? ''}）。`,
+        detailEn: `Work IQ is connected and Outlook, Teams and Calendar are readable (${health.account ?? ''}).`,
+        health,
+      };
+    }
+    logger.info('Work IQ is authenticated but one or more M365 surfaces are not ready; reconnecting', {
+      surfaces: health.surfaces,
+    });
   }
 
   const wait = cooldownMs();
@@ -149,40 +183,48 @@ async function attempt(options: ReconnectOptions): Promise<ReconnectResult> {
       mode: 'cooldown',
       detail: `直前の再接続が失敗したため ${remaining} 秒待機中です。すぐにやり直すには \`hey365_reconnect\` を force=true で実行してください。`,
       detailEn: `A reconnect attempt failed recently; waiting ${remaining}s before retrying. Call \`hey365_reconnect\` with force=true to retry now.`,
-      health,
+      ...(health ? { health } : {}),
     };
   }
 
   if (await silentLogin()) {
-    const after = await checkHealth();
-    if (after.authenticated) {
+    const readiness = await waitForReadiness();
+    if (readiness.ready) {
       noteSuccess();
       return {
         ok: true,
         mode: 'silent',
-        ...(after.account ? { account: after.account } : {}),
-        detail: `Work IQ に再接続しました（${after.account ?? ''}）。`,
-        detailEn: `Reconnected to Work IQ (${after.account ?? ''}).`,
-        health: after,
+        ...(readiness.health.account ? { account: readiness.health.account } : {}),
+        readinessAttempts: readiness.attempts,
+        detail: `Work IQ に再接続し、${readiness.attempts} 回目の確認で Outlook・Teams・Calendar を読み取れるようになりました（${readiness.health.account ?? ''}）。`,
+        detailEn: `Reconnected to Work IQ; Outlook, Teams and Calendar became readable on readiness check ${readiness.attempts} (${readiness.health.account ?? ''}).`,
+        health: readiness.health,
       };
     }
+    return failedReadiness(readiness);
   }
 
   if (options.allowInteractive) {
     logger.info('cached token could not be redeemed, escalating to browser sign-in');
     const setup = await runSetup({ interactive: true, force: true, loginTimeoutMs: interactiveTimeoutMs() });
     if (setup.ok) {
-      noteSuccess();
-      return {
-        ok: true,
-        mode: 'interactive',
-        ...(setup.health.account ? { account: setup.health.account } : {}),
-        detail: `ブラウザ認証で Work IQ に再接続しました（${setup.health.account ?? ''}）。`,
-        detailEn: `Reconnected to Work IQ through browser sign-in (${setup.health.account ?? ''}).`,
-        health: setup.health,
-      };
+      const readiness = await waitForReadiness();
+      if (readiness.ready) {
+        noteSuccess();
+        return {
+          ok: true,
+          mode: 'interactive',
+          ...(readiness.health.account ? { account: readiness.health.account } : {}),
+          readinessAttempts: readiness.attempts,
+          detail: `ブラウザ認証で Work IQ に再接続し、${readiness.attempts} 回目の確認で Outlook・Teams・Calendar を読み取れるようになりました（${readiness.health.account ?? ''}）。`,
+          detailEn: `Reconnected through browser sign-in; Outlook, Teams and Calendar became readable on readiness check ${readiness.attempts} (${readiness.health.account ?? ''}).`,
+          health: readiness.health,
+        };
+      }
+      return failedReadiness(readiness);
     }
     noteFailure();
+    health ??= await checkHealth({ deep: true, timeoutMs: readinessProbeTimeoutMs() });
     return {
       ok: false,
       mode: 'failed',
@@ -190,6 +232,70 @@ async function attempt(options: ReconnectOptions): Promise<ReconnectResult> {
       detailEn: 'Could not reconnect to Work IQ. Run `npx -y @microsoft/workiq auth login` in a terminal and sign in.',
       health: setup.health,
     };
+  }
+
+  function surfacesReady(health: HealthReport): boolean {
+    return (
+      health.authenticated &&
+      health.surfaces?.outlook === true &&
+      health.surfaces.teams === true &&
+      health.surfaces.calendar === true
+    );
+  }
+
+  function unavailableSurfaces(health: HealthReport): string[] {
+    if (!health.authenticated) return ['authentication'];
+    const unavailable: string[] = [];
+    if (health.surfaces?.outlook !== true) unavailable.push('Outlook');
+    if (health.surfaces?.teams !== true) unavailable.push('Teams');
+    if (health.surfaces?.calendar !== true) unavailable.push('Calendar');
+    return unavailable;
+  }
+
+  interface ReadinessResult {
+    ready: boolean;
+    attempts: number;
+    health: HealthReport;
+  }
+
+  async function waitForReadiness(): Promise<ReadinessResult> {
+    const maxAttempts = readinessAttempts();
+    let health: HealthReport | undefined;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      health = await checkHealth({ deep: true, timeoutMs: readinessProbeTimeoutMs() });
+      if (surfacesReady(health)) return { ready: true, attempts: attempt, health };
+
+      const unavailable = unavailableSurfaces(health);
+      logger.warn('Work IQ reconnect completed but M365 surfaces are not ready yet', {
+        attempt,
+        maxAttempts,
+        unavailable,
+      });
+      if (attempt < maxAttempts) await sleep(readinessIntervalMs());
+    }
+
+    return { ready: false, attempts: maxAttempts, health: health ?? (await checkHealth({ deep: true })) };
+  }
+
+  function failedReadiness(readiness: ReadinessResult): ReconnectResult {
+    noteFailure();
+    const health = readiness.health;
+    const unavailable = unavailableSurfaces(health).join('・') || 'Microsoft 365';
+    return {
+      ok: false,
+      mode: 'failed',
+      ...(health.account ? { account: health.account } : {}),
+      readinessAttempts: readiness.attempts,
+      detail: `再接続後に ${readiness.attempts} 回確認しましたが、${unavailable} をまだ読み取れません。次回の呼び出しでも自動的に再試行します。`,
+      detailEn: `Checked readiness ${readiness.attempts} times after reconnecting, but ${unavailable} is still unavailable. The next call will retry automatically.`,
+      health,
+    };
+  }
+
+  async function sleep(ms: number): Promise<void> {
+    if (ms <= 0) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, ms));
   }
 
   noteFailure();

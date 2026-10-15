@@ -610,7 +610,10 @@ export async function healthTool(input: { deep?: boolean }): Promise<ToolRespons
 }
 
 export const reconnectInputSchema = {
-  force: z.boolean().default(false).describe('接続済みでも再接続し直す'),
+  force: z
+    .boolean()
+    .default(true)
+    .describe('接続済み表示でも強制的にトークンを取り直す。通常は true のまま使用する'),
   browser: z
     .boolean()
     .default(true)
@@ -627,7 +630,7 @@ export async function reconnectTool(input: { force?: boolean; browser?: boolean 
   try {
     const result = await reconnect({
       allowInteractive: input.browser !== false,
-      force: input.force ?? false,
+      force: input.force ?? true,
       ignoreCooldown: true,
     });
     const response = ok(describeReconnect(result), { reconnect: result as unknown as Record<string, unknown> });

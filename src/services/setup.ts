@@ -1,7 +1,7 @@
 import { Hey365Error, asHey365Error, classifyFailure } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
 import { timezone } from '../utils/time.js';
-import { describeCommand, resetCommandCache, resolveWorkIqCommand, runWorkIq, tryFetch } from './workiq.js';
+import { describeCommand, fetchMany, resetCommandCache, resolveWorkIqCommand, runWorkIq } from './workiq.js';
 import { rememberAccount } from './store.js';
 import type { GraphUser } from './graph.js';
 
@@ -19,8 +19,16 @@ export interface HealthReport {
   error?: { code: string; nextStep: string };
 }
 
+const ME_URL = '/me?$select=id,displayName,mail,userPrincipalName';
+const DRAFTS_URL = '/me/mailFolders/Drafts?$select=id';
+const SURFACE_URLS = [
+  '/me/messages?$top=1&$select=id',
+  '/me/chats?$top=1&$select=id',
+  '/me/events?$top=1&$select=id',
+] as const;
+
 /** Probes Work IQ and reports what Hey365 can currently do (spec §20). */
-export async function checkHealth(options: { deep?: boolean } = {}): Promise<HealthReport> {
+export async function checkHealth(options: { deep?: boolean; timeoutMs?: number } = {}): Promise<HealthReport> {
   const report: HealthReport = {
     hey365: 'ok',
     workiq: 'error',
@@ -31,27 +39,30 @@ export async function checkHealth(options: { deep?: boolean } = {}): Promise<Hea
     workiqCommand: describeCommand(),
   };
 
+  const urls = options.deep ? [ME_URL, DRAFTS_URL, ...SURFACE_URLS] : [ME_URL, DRAFTS_URL];
+  const versionPromise = runWorkIq(['version'], { timeoutMs: 60_000 }).catch(() => undefined);
+
+  let outcomes;
   try {
-    const version = await runWorkIq(['version'], { timeoutMs: 60_000 });
-    if (version.code === 0) {
-      const match = /\d+\.\d+\.\d+(?:[-+][\w.]+)?/.exec(version.stdout);
-      if (match) report.workiqVersion = match[0];
-    }
+    outcomes = await fetchMany(urls, { timeoutMs: options.timeoutMs ?? 60_000 });
   } catch (error) {
     const hey = asHey365Error(error);
-    if (hey.code === 'WORKIQ_NOT_INSTALLED') {
-      report.workiq = 'not-installed';
-      report.hey365 = 'degraded';
-      report.error = { code: hey.code, nextStep: hey.nextStep('ja') };
-      return report;
-    }
+    report.workiq = hey.code === 'WORKIQ_NOT_INSTALLED' ? 'not-installed' : 'unauthenticated';
+    report.hey365 = 'degraded';
+    report.error = { code: hey.code, nextStep: hey.nextStep('ja') };
+    return report;
   }
 
-  const me = await tryFetch<GraphUser>('/me?$select=id,displayName,mail,userPrincipalName');
+  const version = await versionPromise;
+  if (version?.code === 0) {
+    const match = /\d+\.\d+\.\d+(?:[-+][\w.]+)?/.exec(version.stdout);
+    if (match) report.workiqVersion = match[0];
+  }
+
+  const meOutcome = outcomes[0];
+  const me = meOutcome?.ok ? (meOutcome.data as GraphUser | undefined) : undefined;
   if (!me?.id) {
-    const probe = await runWorkIq(['fetch', '--urls', '/me'], { timeoutMs: 60_000 }).catch(() => undefined);
-    const raw = `${probe?.stderr ?? ''}${probe?.stdout ?? ''}`;
-    const code = classifyFailure(raw);
+    const code = meOutcome?.error?.code ?? classifyFailure(meOutcome?.error?.message ?? '');
     report.workiq = code === 'WORKIQ_NOT_INSTALLED' ? 'not-installed' : 'unauthenticated';
     report.hey365 = 'degraded';
     const error = new Hey365Error(code === 'INTERNAL_ERROR' ? 'WORKIQ_NOT_AUTHENTICATED' : code);
@@ -66,18 +77,17 @@ export async function checkHealth(options: { deep?: boolean } = {}): Promise<Hea
   rememberAccount(report.account);
 
   if (options.deep) {
-    const [mail, chats, events] = await Promise.all([
-      tryFetch('/me/messages?$top=1&$select=id'),
-      tryFetch('/me/chats?$top=1'),
-      tryFetch('/me/events?$top=1&$select=id'),
-    ]);
-    report.surfaces = { outlook: Boolean(mail), teams: Boolean(chats), calendar: Boolean(events) };
+    report.surfaces = {
+      outlook: outcomes[2]?.ok === true,
+      teams: outcomes[3]?.ok === true,
+      calendar: outcomes[4]?.ok === true,
+    };
+    report.readAccess = Object.values(report.surfaces).every(Boolean);
   }
 
   // Write capability is inferred from mail folder permissions rather than by
   // sending anything. Hey365 never sends without an explicit user instruction.
-  const drafts = await tryFetch('/me/mailFolders/Drafts?$select=id');
-  report.writeAccess = Boolean(drafts);
+  report.writeAccess = outcomes[1]?.ok === true;
   if (!report.writeAccess) {
     const error = new Hey365Error('WORKIQ_WRITE_DISABLED');
     report.error = { code: error.code, nextStep: error.nextStep('ja') };
