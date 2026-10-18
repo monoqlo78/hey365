@@ -57,8 +57,9 @@ const INSTRUCTIONS = `Hey365 は Microsoft 365 (Outlook / Teams / Calendar) を�
 
 認証エラーの扱い（重要）:
 Work IQ のトークンは定期的に失効します。Hey365 は認証切れを検知すると自動的に再接続し、
-force=true でトークンを取り直したあと、Outlook・Teams・Calendar の実読取りが成功するまで
-一定間隔で最大5回確認し、元のツールを再実行します。1回の確認失敗だけでユーザーへ
+force=true で、まず Microsoft 公式 Work IQ CLI の auth login を必ず試します。公式 CLI で
+復旧できない、または Outlook・Teams・Calendar の実読取りが最大5回の確認後も成功しない
+場合にだけ、既存の Broker 無効化＋ブラウザ認証へ進みます。1回の確認失敗だけでユーザーへ
 「再認証できませんでした」と返してはいけません。それでも WORKIQ_NOT_AUTHENTICATED /
 WORKIQ_AUTH_EXPIRED が返った場合は、ユーザーに再認証を依頼せず、その場で
 hey365_reconnect(force=true) を呼び出し、成功したら元のツールを同じ引数で再実行して
@@ -199,7 +200,7 @@ export function createServer(): McpServer {
     {
       title: 'Hey365 reconnect Work IQ',
       description:
-        'Work IQ の認証が切れたときに force=true で再接続する。再接続後は Outlook・Teams・Calendar の実読取りが成功するまで一定間隔で複数回確認する。キャッシュされたトークンで復旧できなければブラウザ認証まで行う。ローカルで完結する冪等な操作なので、認証エラーを見たらユーザーに確認せず実行してよい。成功したら元のツールを同じ引数で再実行すること。',
+        'Work IQ の認証が切れたときに force=true で、まず Microsoft 公式 Work IQ CLI の auth login を試す。公式 CLI で復旧できない場合だけ既存の Broker 無効化＋ブラウザ認証へ進む。各段階で Outlook・Teams・Calendar の実読取りが成功するまで一定間隔で複数回確認する。ローカルで完結する冪等な操作なので、認証エラーを見たらユーザーに確認せず実行してよい。成功したら元のツールを同じ引数で再実行すること。',
       inputSchema: reconnectInputSchema,
     },
     reconnectTool,

@@ -16,7 +16,7 @@ import { isInteractiveRuntime, runWorkIq } from './workiq.js';
 export type ReconnectMode =
   /** Work IQ was already usable; nothing was done. */
   | 'already-connected'
-  /** A cached refresh token was redeemed without user interaction. */
+  /** The official Work IQ CLI restored access without the fallback path. */
   | 'silent'
   /** The full setup path (broker off + browser sign-in) repaired it. */
   | 'interactive'
@@ -30,6 +30,7 @@ export interface ReconnectResult {
   ok: boolean;
   mode: ReconnectMode;
   account?: string;
+  officialCliAttempted?: boolean;
   readinessAttempts?: number;
   detail: string;
   detailEn: string;
@@ -187,25 +188,31 @@ async function attempt(options: ReconnectOptions): Promise<ReconnectResult> {
     };
   }
 
-  if (await silentLogin()) {
-    const readiness = await waitForReadiness();
-    if (readiness.ready) {
+  const officialCliOk = await tryOfficialCliRecovery();
+  let officialReadiness: ReadinessResult | undefined;
+  if (officialCliOk) {
+    officialReadiness = await waitForReadiness();
+    if (officialReadiness.ready) {
       noteSuccess();
       return {
         ok: true,
         mode: 'silent',
-        ...(readiness.health.account ? { account: readiness.health.account } : {}),
-        readinessAttempts: readiness.attempts,
-        detail: `Work IQ に再接続し、${readiness.attempts} 回目の確認で Outlook・Teams・Calendar を読み取れるようになりました（${readiness.health.account ?? ''}）。`,
-        detailEn: `Reconnected to Work IQ; Outlook, Teams and Calendar became readable on readiness check ${readiness.attempts} (${readiness.health.account ?? ''}).`,
-        health: readiness.health,
+        ...(officialReadiness.health.account ? { account: officialReadiness.health.account } : {}),
+        officialCliAttempted: true,
+        readinessAttempts: officialReadiness.attempts,
+        detail: `公式 Work IQ CLI で再接続し、${officialReadiness.attempts} 回目の確認で Outlook・Teams・Calendar を読み取れるようになりました（${officialReadiness.health.account ?? ''}）。`,
+        detailEn: `Reconnected with the official Work IQ CLI; Outlook, Teams and Calendar became readable on readiness check ${officialReadiness.attempts} (${officialReadiness.health.account ?? ''}).`,
+        health: officialReadiness.health,
       };
     }
-    return failedReadiness(readiness);
+    logger.warn('official Work IQ CLI returned success but M365 reads are still unavailable; continuing to existing recovery', {
+      attempts: officialReadiness.attempts,
+      unavailable: unavailableSurfaces(officialReadiness.health),
+    });
   }
 
   if (options.allowInteractive) {
-    logger.info('cached token could not be redeemed, escalating to browser sign-in');
+    logger.info('official Work IQ CLI recovery did not restore M365 reads; continuing to existing recovery');
     const setup = await runSetup({ interactive: true, force: true, loginTimeoutMs: interactiveTimeoutMs() });
     if (setup.ok) {
       const readiness = await waitForReadiness();
@@ -215,9 +222,10 @@ async function attempt(options: ReconnectOptions): Promise<ReconnectResult> {
           ok: true,
           mode: 'interactive',
           ...(readiness.health.account ? { account: readiness.health.account } : {}),
+          officialCliAttempted: true,
           readinessAttempts: readiness.attempts,
-          detail: `ブラウザ認証で Work IQ に再接続し、${readiness.attempts} 回目の確認で Outlook・Teams・Calendar を読み取れるようになりました（${readiness.health.account ?? ''}）。`,
-          detailEn: `Reconnected through browser sign-in; Outlook, Teams and Calendar became readable on readiness check ${readiness.attempts} (${readiness.health.account ?? ''}).`,
+          detail: `公式 CLI で復旧できなかったため既存のブラウザ復旧へ進み、${readiness.attempts} 回目の確認で Outlook・Teams・Calendar を読み取れるようになりました（${readiness.health.account ?? ''}）。`,
+          detailEn: `The official CLI did not restore access, so the existing browser recovery ran; Outlook, Teams and Calendar became readable on readiness check ${readiness.attempts} (${readiness.health.account ?? ''}).`,
           health: readiness.health,
         };
       }
@@ -228,11 +236,14 @@ async function attempt(options: ReconnectOptions): Promise<ReconnectResult> {
     return {
       ok: false,
       mode: 'failed',
+      officialCliAttempted: true,
       detail: setup.message,
       detailEn: 'Could not reconnect to Work IQ. Run `npx -y @microsoft/workiq auth login` in a terminal and sign in.',
       health: setup.health,
     };
   }
+
+  if (officialReadiness) return failedReadiness(officialReadiness);
 
   function surfacesReady(health: HealthReport): boolean {
     return (
@@ -285,6 +296,7 @@ async function attempt(options: ReconnectOptions): Promise<ReconnectResult> {
     return {
       ok: false,
       mode: 'failed',
+      officialCliAttempted: true,
       ...(health.account ? { account: health.account } : {}),
       readinessAttempts: readiness.attempts,
       detail: `再接続後に ${readiness.attempts} 回確認しましたが、${unavailable} をまだ読み取れません。次回の呼び出しでも自動的に再試行します。`,
@@ -302,6 +314,7 @@ async function attempt(options: ReconnectOptions): Promise<ReconnectResult> {
   return {
     ok: false,
     mode: 'failed',
+    officialCliAttempted: true,
     detail: 'キャッシュされたトークンでは再接続できませんでした。`hey365_reconnect` を実行するとブラウザ認証まで試します。',
     detailEn: 'The cached token could not be redeemed. Call `hey365_reconnect` to also attempt browser sign-in.',
     health,
@@ -309,25 +322,31 @@ async function attempt(options: ReconnectOptions): Promise<ReconnectResult> {
 }
 
 /**
- * Redeems the cached refresh token. stdin is never inherited, so the CLI can
- * neither block on a console prompt nor read the MCP transport; when a cached
- * token is still valid this returns in a second or two.
+ * First-line recovery through Microsoft's official Work IQ CLI.
+ *
+ * Work IQ CLI 1.0.1 does not expose a `--force` option. `force=true` is
+ * therefore enforced by Hey365: this official command is run unconditionally
+ * before the existing broker-disable/browser recovery, even when an earlier
+ * health check reported a connected session.
  */
-async function silentLogin(): Promise<boolean> {
+async function tryOfficialCliRecovery(): Promise<boolean> {
   const account = process.env.HEY365_WORKIQ_ACCOUNT?.trim() || lastKnownAccount();
   const args = ['auth', 'login'];
   if (account) args.push('--account', account);
 
   try {
-    logger.info('attempting silent Work IQ reconnect', { account: Boolean(account) });
+    logger.info('attempting recovery with the official Work IQ CLI', {
+      account: Boolean(account),
+      forcedByHey365: true,
+    });
     const result = await runWorkIq(args, { timeoutMs: silentTimeoutMs() });
     if (result.timedOut) {
-      logger.warn('silent reconnect timed out');
+      logger.warn('official Work IQ CLI recovery timed out');
       return false;
     }
     return result.code === 0;
   } catch (error) {
-    logger.debug('silent reconnect failed', { error: (error as Error).message });
+    logger.debug('official Work IQ CLI recovery failed', { error: (error as Error).message });
     return false;
   }
 }

@@ -92,6 +92,23 @@ describe('reconnect', () => {
     );
   });
 
+  it('falls through to the existing recovery when the official CLI exits successfully but Teams stays unavailable', async () => {
+    healthMock
+      .mockResolvedValueOnce(teamsPending)
+      .mockResolvedValueOnce(teamsPending)
+      .mockResolvedValueOnce(teamsPending)
+      .mockResolvedValue(connected);
+    workIqMock.mockResolvedValue(loginResult(0));
+    setupMock.mockResolvedValue({ ok: true, steps: [], health: connected, message: 'ok' });
+
+    const result = await reconnect({ force: true, allowInteractive: true });
+
+    expect(result.mode).toBe('interactive');
+    expect(result.officialCliAttempted).toBe(true);
+    expect(setupMock).toHaveBeenCalledTimes(1);
+    expect(result.health?.surfaces?.teams).toBe(true);
+  });
+
   it('does not open a browser when escalation is not allowed', async () => {
     healthMock.mockResolvedValue(disconnected);
     workIqMock.mockResolvedValue(loginResult(1));
