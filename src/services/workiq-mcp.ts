@@ -14,9 +14,26 @@ import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import { Hey365Error, classifyFailure } from '../utils/errors.js';
 import { logger, redact } from '../utils/logger.js';
 
-export const WORKIQ_MCP_URL = 'https://workiq.svc.cloud.microsoft/mcp';
-export const WORKIQ_CLIENT_ID = 'ba081686-5d24-4bc6-a0d6-d034ecffed87';
-const REDIRECT_URL = 'http://localhost:12798/callback';
+export const WORKIQ_CATALOG = {
+  marketplace: 'github/copilot-plugins',
+  manifest: '.github/plugin/marketplace.json',
+  plugin: 'workiq',
+  source: 'microsoft/work-iq',
+  sourcePath: 'plugins/workiq',
+  registration: '.mcp.json',
+} as const;
+
+export const WORKIQ_MCP_REGISTRATION = {
+  type: 'http',
+  url: 'https://workiq.svc.cloud.microsoft/mcp',
+  oauthClientId: 'ba081686-5d24-4bc6-a0d6-d034ecffed87',
+  oauthPublicClient: true,
+  auth: { redirectPort: 12798 },
+} as const;
+
+export const WORKIQ_MCP_URL = WORKIQ_MCP_REGISTRATION.url;
+export const WORKIQ_CLIENT_ID = WORKIQ_MCP_REGISTRATION.oauthClientId;
+const REDIRECT_URL = `http://localhost:${WORKIQ_MCP_REGISTRATION.auth.redirectPort}/callback`;
 
 export function workIqBackend(): 'mcp' | 'cli' {
   const value = process.env.HEY365_WORKIQ_BACKEND?.trim().toLowerCase() || 'mcp';
@@ -267,7 +284,7 @@ export async function loginWorkIqMcp(timeoutMs = 300_000): Promise<void> {
   try {
     await new Promise<void>((resolve, reject) => {
       server.once('error', () => reject(new Hey365Error('WORKIQ_CONNECTION_ERROR', 'Cannot listen on localhost:12798; close other MCP sign-in flows')));
-      server.listen(12798, '127.0.0.1', resolve);
+      server.listen(WORKIQ_MCP_REGISTRATION.auth.redirectPort, '127.0.0.1', resolve);
     });
     try {
       if (await auth(provider, authOptions) === 'AUTHORIZED') return;

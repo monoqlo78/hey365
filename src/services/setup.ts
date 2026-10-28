@@ -4,7 +4,7 @@ import { timezone } from '../utils/time.js';
 import { describeCommand, fetchMany, isInteractiveRuntime, resetCommandCache, resolveWorkIqCommand, runWorkIq } from './workiq.js';
 import { rememberAccount } from './store.js';
 import type { GraphUser } from './graph.js';
-import { loginWorkIqMcp, workIqBackend } from './workiq-mcp.js';
+import { loginWorkIqMcp, workIqBackend, WORKIQ_CATALOG } from './workiq-mcp.js';
 
 export interface HealthReport {
   hey365: 'ok' | 'degraded';
@@ -13,6 +13,7 @@ export interface HealthReport {
   readAccess: boolean;
   writeAccess: boolean | 'unknown';
   backend: 'mcp' | 'cli';
+  workiqCatalog?: typeof WORKIQ_CATALOG;
   timezone: string;
   account?: string;
   workiqCommand: string;
@@ -39,6 +40,7 @@ export async function checkHealth(options: { deep?: boolean; timeoutMs?: number 
     readAccess: false,
     writeAccess: backend === 'mcp' ? 'unknown' : false,
     backend,
+    ...(backend === 'mcp' ? { workiqCatalog: WORKIQ_CATALOG } : {}),
     timezone: timezone(),
     workiqCommand: describeCommand(),
   };

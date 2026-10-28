@@ -19,7 +19,9 @@ vi.mock('@napi-rs/keyring', () => ({
   },
 }));
 
-const { WorkIqOAuthProvider, decodeWorkIqResult, WORKIQ_CLIENT_ID } = await import('../src/services/workiq-mcp.js');
+const {
+  WorkIqOAuthProvider, decodeWorkIqResult, WORKIQ_CLIENT_ID, WORKIQ_CATALOG, WORKIQ_MCP_REGISTRATION,
+} = await import('../src/services/workiq-mcp.js');
 let home: string;
 
 describe('WorkIQ OAuth credentials', () => {
@@ -33,6 +35,26 @@ describe('WorkIQ OAuth credentials', () => {
   afterEach(async () => {
     await rm(home, { recursive: true, force: true });
     vi.unstubAllEnvs();
+  });
+
+  it('matches the verified GitHub catalog source and upstream MCP registration', () => {
+    expect(WORKIQ_CATALOG).toEqual({
+      marketplace: 'github/copilot-plugins',
+      manifest: '.github/plugin/marketplace.json',
+      plugin: 'workiq',
+      source: 'microsoft/work-iq',
+      sourcePath: 'plugins/workiq',
+      registration: '.mcp.json',
+    });
+    expect(WORKIQ_MCP_REGISTRATION).toEqual({
+      type: 'http',
+      url: 'https://workiq.svc.cloud.microsoft/mcp',
+      oauthClientId: 'ba081686-5d24-4bc6-a0d6-d034ecffed87',
+      oauthPublicClient: true,
+      auth: { redirectPort: 12798 },
+    });
+    expect(new WorkIqOAuthProvider().clientInformation().client_id).toBe(WORKIQ_MCP_REGISTRATION.oauthClientId);
+    expect(new URL(new WorkIqOAuthProvider().redirectUrl).port).toBe(String(WORKIQ_MCP_REGISTRATION.auth.redirectPort));
   });
 
   it('uses the official public OAuth client, a loopback redirect and independent state', () => {

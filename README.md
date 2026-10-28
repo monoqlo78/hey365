@@ -94,6 +94,28 @@ The OAuth public client is `ba081686-5d24-4bc6-a0d6-d034ecffed87`; the loopback 
 
 For a known time range, Hey365 calls `fetch` on `/me/calendarView` with explicit `startDateTime`, `endDateTime`, `$select`, and `$top`. This includes recurring occurrences; it does not use semantic `ask` to enumerate meetings. Query values are URL-encoded once, while opaque entity IDs are preserved. A failed meeting read is surfaced as an error, not an empty calendar. The existing per-request meeting limit still applies.
 
+### Official catalog and registration contract
+
+The authoritative GitHub Copilot catalog is [`github/copilot-plugins/.github/plugin/marketplace.json`](https://github.com/github/copilot-plugins/blob/main/.github/plugin/marketplace.json). Its `workiq` entry points to **`microsoft/work-iq`, path `plugins/workiq`**; it is not a plugin folder inside the catalog repository. The upstream [`.mcp.json`](https://github.com/microsoft/work-iq/blob/main/plugins/workiq/.mcp.json) defines the connection contract:
+
+```json
+{
+  "mcpServers": {
+    "workiq": {
+      "type": "http",
+      "url": "https://workiq.svc.cloud.microsoft/mcp",
+      "oauthClientId": "ba081686-5d24-4bc6-a0d6-d034ecffed87",
+      "oauthPublicClient": true,
+      "auth": { "redirectPort": 12798 }
+    }
+  }
+}
+```
+
+Hey365 centralizes these verified settings in `WORKIQ_MCP_REGISTRATION` and records their provenance in `WORKIQ_CATALOG`; hosted health exposes `workiqCatalog`. It follows the official contract directly, without downloading or installing a plugin at runtime. Updates must verify the catalog's source entry, the upstream plugin manifest, and `.mcp.json` together, then update implementation, documentation and regression expectations when the contract changes. The catalog listing's version alone is not the installed plugin's version.
+
+For Copilot itself, prefer the official catalog plugin. If a separate `workiq` entry exists in the client's MCP configuration, compare it with the upstream definition, including **all three OAuth settings**, not just the URL. This comparison checks configuration, not the validity of an existing sign-in or tenant consent. Hey365's `setup` does not rewrite other MCP hosts' settings or share their credentials.
+
 ## Register with your MCP client
 
 One command writes the correct config for you, merging into any existing file:

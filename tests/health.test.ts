@@ -81,6 +81,8 @@ describe('checkHealth', () => {
     ]);
     const report = await checkHealth({ deep: true });
     expect(report.backend).toBe('mcp');
+    expect(report.workiqCatalog?.marketplace).toBe('github/copilot-plugins');
+    expect(report.workiqCatalog?.source).toBe('microsoft/work-iq');
     expect(report.authenticated).toBe(true);
     expect(report.readAccess).toBe(true);
     expect(report.writeAccess).toBe('unknown');

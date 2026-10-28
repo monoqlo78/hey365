@@ -94,6 +94,28 @@ OAuth パブリッククライアントは `ba081686-5d24-4bc6-a0d6-d034ecffed87
 
 期間が分かっている会議一覧は、`fetch` の `/me/calendarView` に `startDateTime`・`endDateTime`・`$select`・`$top` を指定して取得します。繰り返し予定の各回を含めて取得し、意味検索の `ask` は一覧取得に使いません。クエリ値は一度だけ URL エンコードし、取得したエンティティ ID は変更しません。取得失敗を「予定なし」に置き換えず、エラーとして返します。既存の1回あたりの取得件数上限は維持します。
 
+### 公式カタログと登録仕様
+
+GitHub Copilot の公式カタログは [`github/copilot-plugins/.github/plugin/marketplace.json`](https://github.com/github/copilot-plugins/blob/main/.github/plugin/marketplace.json) です。`workiq` の参照元は **`microsoft/work-iq` の `plugins/workiq`** であり、カタログリポジトリ内の同名フォルダーではありません。接続仕様の正本は参照先の [`.mcp.json`](https://github.com/microsoft/work-iq/blob/main/plugins/workiq/.mcp.json) です。
+
+```json
+{
+  "mcpServers": {
+    "workiq": {
+      "type": "http",
+      "url": "https://workiq.svc.cloud.microsoft/mcp",
+      "oauthClientId": "ba081686-5d24-4bc6-a0d6-d034ecffed87",
+      "oauthPublicClient": true,
+      "auth": { "redirectPort": 12798 }
+    }
+  }
+}
+```
+
+Hey365 は照合済みの設定を `WORKIQ_MCP_REGISTRATION`、参照元を `WORKIQ_CATALOG` に集約し、公式 MCP のヘルスチェックにも `workiqCatalog` を表示します。起動時にカタログをダウンロードしたりプラグインをインストールしたりするのではなく、この公式仕様に直接対応します。更新時は、カタログの参照元・参照先のプラグインマニフェスト・`.mcp.json` をまとめて確認し、接続仕様が変わった場合はコード・文書・回帰テストも更新します。カタログ一覧のバージョンだけで、実際のプラグインの新旧を判断しません。
+
+Copilot 自体では公式カタログのプラグインを優先します。クライアントの MCP 設定に独立した `workiq` 登録がある場合は、URL だけでなく **OAuth の3設定も含めて**正本と照合してください。この確認は設定の整合性を対象とし、既存サインインや管理者同意の有効性を保証しません。Hey365 の `setup` が他の MCP ホストの設定を書き換えたり、資格情報を共有したりすることはありません。
+
 ## MCP クライアントへの登録
 
 1コマンドで、既存の設定を壊さずに追記します。
