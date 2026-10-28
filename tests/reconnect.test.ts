@@ -64,6 +64,7 @@ describe('auth failure classification', () => {
 
 describe('withAuthRecovery', () => {
   beforeEach(() => {
+    vi.stubEnv('HEY365_WORKIQ_BACKEND', 'cli');
     resetReconnectState();
     reconnectMock.mockReset();
     enabledMock.mockReset();
@@ -71,6 +72,7 @@ describe('withAuthRecovery', () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     vi.restoreAllMocks();
   });
 

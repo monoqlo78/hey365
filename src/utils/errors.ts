@@ -12,6 +12,7 @@ export type Hey365ErrorCode =
   | 'WORKIQ_PERMISSION_DENIED'
   | 'WORKIQ_WRITE_DISABLED'
   | 'WORKIQ_EULA_REQUIRED'
+  | 'WORKIQ_CREDENTIAL_STORE_ERROR'
   | 'SESSION_NOT_FOUND'
   | 'SEND_FAILED'
   | 'DRAFT_NOT_FOUND'
@@ -26,24 +27,28 @@ const NEXT_STEPS: Record<Hey365ErrorCode, { ja: string; en: string }> = {
     en: 'Work IQ CLI was not found. Run `hey365_setup`, or install it with `npm i -g @microsoft/workiq`.',
   },
   WORKIQ_NOT_AUTHENTICATED: {
-    ja: 'Work IQ の認証が切れています。`hey365_reconnect` を実行して再接続し、直前のツールをそのまま再実行してください（ユーザーへの確認は不要です）。',
-    en: 'The Work IQ sign-in is no longer valid. Call `hey365_reconnect`, then re-run the previous tool with the same arguments. No need to ask the user first.',
+    ja: 'WorkIQ のサインインが必要です。`hey365_reconnect` が成功した場合だけ元の操作を再実行してください。ユーザー操作が必要な場合は、ターミナルで `hey365 setup` を実行してください。',
+    en: 'WorkIQ needs sign-in. Retry the original operation only after `hey365_reconnect` succeeds. If user interaction is needed, run `hey365 setup` in a terminal.',
   },
   WORKIQ_AUTH_EXPIRED: {
-    ja: 'Work IQ の認証が期限切れです。`hey365_reconnect` を実行して再接続し、直前のツールをそのまま再実行してください（ユーザーへの確認は不要です）。',
-    en: 'The Work IQ session expired. Call `hey365_reconnect`, then re-run the previous tool with the same arguments. No need to ask the user first.',
+    ja: 'WorkIQ の認証が期限切れです。`hey365_reconnect` が成功した場合だけ元の操作を再実行してください。再サインインが必要な場合はターミナルで `hey365 setup` を実行してください。',
+    en: 'WorkIQ sign-in expired. Retry only after `hey365_reconnect` succeeds. If a new sign-in is required, run `hey365 setup` in a terminal.',
   },
   WORKIQ_ADMIN_CONSENT_REQUIRED: {
-    ja: 'テナント管理者の同意が必要です。管理者に `npx @microsoft/workiq auth consent` の実行を依頼してください。',
-    en: 'Tenant admin consent is required. Ask an admin to run `npx @microsoft/workiq auth consent`.',
+    ja: 'テナント管理者の同意が必要です。公式ガイド https://github.com/microsoft/work-iq/blob/main/ADMIN-INSTRUCTIONS.md に従い、管理者に WorkIQ のサービスプリンシパルと同意を確認してもらってください。',
+    en: 'Tenant admin consent is required. Ask an admin to verify WorkIQ service principals and consent using https://github.com/microsoft/work-iq/blob/main/ADMIN-INSTRUCTIONS.md.',
   },
   WORKIQ_CONNECTION_ERROR: {
     ja: 'Microsoft 365 に接続できませんでした。ネットワークを確認して再実行してください。',
     en: 'Could not reach Microsoft 365. Check your network connection and retry.',
   },
   WORKIQ_PERMISSION_DENIED: {
-    ja: 'このデータを読み取る権限がありません。取得できた範囲で続行します。',
-    en: 'You do not have permission to read this data. Continuing with what is available.',
+    ja: 'WorkIQ の権限またはポリシーにより拒否されました。再ログインは繰り返さず、エラー詳細にあるスコープ・管理者同意・アクセス制御を確認してください。',
+    en: 'WorkIQ denied this operation. Do not repeatedly sign in; check the reported scope, admin consent and access policy.',
+  },
+  WORKIQ_CREDENTIAL_STORE_ERROR: {
+    ja: 'OS の資格情報ストアまたは暗号化キャッシュを利用できません。資格情報ストアへのアクセスを確認してください。平文保存には切り替えません。',
+    en: 'The OS credential store or encrypted token cache is unavailable. Check credential-store access; plaintext storage is not used.',
   },
   WORKIQ_WRITE_DISABLED: {
     ja: '送信権限がありません。要約と返信案の作成までは利用できます。',
@@ -174,6 +179,29 @@ export function classifyFailure(raw: string, statusCode?: number): Hey365ErrorCo
   if (text.includes('eula')) return 'WORKIQ_EULA_REQUIRED';
 
   if (
+    text.includes('aadsts65001') ||
+    text.includes('aadsts650052') ||
+    text.includes('consent_required') ||
+    text.includes('admin consent') ||
+    text.includes('auth consent')
+  ) {
+    return 'WORKIQ_ADMIN_CONSENT_REQUIRED';
+  }
+
+  if (
+    statusCode === 403 ||
+    /\b(?:http(?: status)?\s*[:=]?\s*403|statuscode["'\s:]+403)\b/.test(text) ||
+    text.includes('accessdenied') ||
+    text.includes('access denied') ||
+    text.includes('authorization_requestdenied') ||
+    text.includes('missing scope permissions') ||
+    text.includes('insufficient privileges') ||
+    text.includes('forbidden')
+  ) {
+    return 'WORKIQ_PERMISSION_DENIED';
+  }
+
+  if (
     text.includes('aadsts50076') ||
     text.includes('aadsts50079') ||
     text.includes('aadsts700082') ||
@@ -187,15 +215,6 @@ export function classifyFailure(raw: string, statusCode?: number): Hey365ErrorCo
     text.includes('refresh token has expired')
   ) {
     return 'WORKIQ_AUTH_EXPIRED';
-  }
-
-  if (
-    text.includes('aadsts65001') ||
-    text.includes('consent_required') ||
-    text.includes('admin consent') ||
-    text.includes('auth consent')
-  ) {
-    return 'WORKIQ_ADMIN_CONSENT_REQUIRED';
   }
 
   if (
@@ -213,15 +232,14 @@ export function classifyFailure(raw: string, statusCode?: number): Hey365ErrorCo
     return 'WORKIQ_NOT_AUTHENTICATED';
   }
 
-  if (statusCode === 403 || text.includes('accessdenied') || text.includes('forbidden')) {
-    return 'WORKIQ_PERMISSION_DENIED';
-  }
-
   if (
     text.includes('etimedout') ||
     text.includes('econnreset') ||
     text.includes('enotfound') ||
     text.includes('socket hang up') ||
+    text.includes('fetch failed') ||
+    text.includes('timed out') ||
+    text.includes('econnrefused') ||
     text.includes('network') ||
     (statusCode !== undefined && statusCode >= 500)
   ) {

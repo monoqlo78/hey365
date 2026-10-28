@@ -23,6 +23,7 @@ import { Hey365Error, asHey365Error, isAuthFailure, type Hey365ErrorCode } from 
 import { logger } from '../utils/logger.js';
 import { timezone, parseAsOf, addBusinessDays, formatDateTime } from '../utils/time.js';
 import { CLIENTS, buildServerSpec, findClient, installForClient } from '../services/install.js';
+import { workIqBackend } from '../services/workiq-mcp.js';
 
 export interface ToolResponse {
   // The MCP SDK allows arbitrary extra fields on a tool result.
@@ -73,6 +74,20 @@ function prefixText(response: ToolResponse, note: string): ToolResponse {
  */
 function explainUnrecovered(response: ToolResponse, tool: string, result?: ReconnectResult): ToolResponse {
   const payload = (response.structuredContent as { error?: Record<string, unknown> } | undefined)?.error ?? {};
+  if (workIqBackend() === 'mcp') {
+    const error = result?.health?.error;
+    return {
+      ...response,
+      content: [{ type: 'text', text: result?.detail ?? 'WorkIQ MCP の認証を復旧できません。ターミナルで `hey365 setup` を実行してください。' }],
+      structuredContent: {
+        error: {
+          ...payload,
+          ...(error ? { code: error.code, message: error.message, nextStep: error.nextStep } : {}),
+          recovery: { automatic: false, attempted: Boolean(result), retryOriginalCall: false, requiresUserAction: true },
+        },
+      },
+    };
+  }
   const lines = [
     '⚠ Work IQ の認証が切れています。',
     result ? `自動再接続を試みましたが完了しませんでした（mode: ${result.mode}）。` : '自動再接続は無効化されています。',

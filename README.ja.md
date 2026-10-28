@@ -49,7 +49,7 @@ Hey365 チェック完了
 
 ```mermaid
 flowchart LR
-    A[Outlook メール<br/>Teams チャット<br/>Teams チャネル<br/>予定表] --> B[Work IQ CLI<br/>Microsoft Graph]
+    A[Outlook メール<br/>Teams チャット<br/>Teams チャネル<br/>予定表] --> B[公式 WorkIQ MCP<br/>Microsoft Graph]
     B --> C[スレッド再構成]
     C --> D[トリアージ<br/>シグナル検出とスコア]
     D --> E[重複排除<br/>同一案件の統合]
@@ -58,7 +58,7 @@ flowchart LR
     G --> H[送信<br/>元のスレッドに返信]
 ```
 
-Microsoft 365 へのアクセスには [Work IQ CLI](https://www.npmjs.com/package/@microsoft/workiq)（認証済みの Microsoft Graph プロキシ）を使います。返信案は `workiq ask` 経由で Microsoft 365 Copilot が生成するため、**Hey365 独自の API キーは不要**です。
+Microsoft 365 へのアクセスには [公式 WorkIQ MCP](https://github.com/microsoft/work-iq/tree/main/plugins/workiq) の `https://workiq.svc.cloud.microsoft/mcp` を使います。Streamable HTTP と OAuth 認可コードフロー（PKCE）で接続し、読み取りは `fetch`、関数は `call_function`、承認済みの書き込みは `do_action` / `create_entity` に統一します。返信案は `ask` 経由で Microsoft 365 Copilot が生成するため、**Hey365 独自の API キーは不要**です。旧 CLI は `HEY365_WORKIQ_BACKEND=cli` の明示指定時のみ利用し、失敗時に自動で切り替えることはありません。
 
 ## 前提条件
 
@@ -67,7 +67,8 @@ Microsoft 365 へのアクセスには [Work IQ CLI](https://www.npmjs.com/packa
 | Node.js 20 以上 | `node --version` |
 | Microsoft 365 の職場アカウント | Outlook と Teams |
 | Microsoft 365 Copilot ライセンス | 返信案生成と会議要約に必要 |
-| `@microsoft/workiq` | `hey365 setup` が自動でインストール・認証します |
+| OS の資格情報ストア | Windows Credential Manager / macOS Keychain / 対応する Linux keyring。トークンの安全な永続化に必要 |
+| WorkIQ のテナント有効化 | 要求する操作に対応した管理者同意とアクセス許可が必要 |
 
 ## インストール
 
@@ -78,12 +79,20 @@ npm install
 npm run build
 ```
 
-続いて Microsoft 365 に接続します（Work IQ の導入、ブローカー認証の無効化、ブラウザでのサインインまで自動）。
+続いて公式ホスト型 MCP にブラウザでサインインします。Work IQ CLI の導入や WAM の設定変更は不要です。
 
 ```bash
 node dist/index.js setup
-node dist/index.js health     # "hey365": "ok" と表示されれば成功
+node dist/index.js health --deep
 ```
+
+OAuth パブリッククライアントは `ba081686-5d24-4bc6-a0d6-d034ecffed87`、ループバックのコールバックは `http://localhost:12798/callback` です。同じポートを使う別のサインイン処理は先に閉じてください。トークンは AES-256-GCM の暗号文として `~/.hey365/workiq-*.enc` に保存し、暗号鍵だけを OS の資格情報ストアに保存します。平文保存には切り替えません。`HEY365_HOME` で保存先、`HEY365_WORKIQ_ACCOUNT` でアカウント別キャッシュとサインインヒントを指定できます。
+
+**Copilot で WorkIQ が使えても、Hey365 の認証は別です。** 各 MCP ホストが資格情報を管理するため、Copilot や旧 CLI のトークンをコピーせず、初回はターミナルで `setup` を実行してください。通常の MCP ツール呼び出しではトークン更新のみを行い、ブラウザを開いたり MCP の標準入力を消費したりしません。
+
+### 会議一覧の取得仕様
+
+期間が分かっている会議一覧は、`fetch` の `/me/calendarView` に `startDateTime`・`endDateTime`・`$select`・`$top` を指定して取得します。繰り返し予定の各回を含めて取得し、意味検索の `ask` は一覧取得に使いません。クエリ値は一度だけ URL エンコードし、取得したエンティティ ID は変更しません。取得失敗を「予定なし」に置き換えず、エラーとして返します。既存の1回あたりの取得件数上限は維持します。
 
 ## MCP クライアントへの登録
 
@@ -211,7 +220,7 @@ node dist/index.js reconnect                   # Work IQ の認証を貼り直�
 | `hey365_schedule` | `action`（`list`/`add`/`remove`）, `job`, `at`, `weekdaysOnly`, `apply` | ダイジェストの定期実行を登録・解除・一覧 |
 | `hey365_health` | `deep` | 接続・認証・読み書き権限の状態 |
 | `hey365_reconnect` | `force`, `browser` | Work IQ の認証を貼り直す。認証切れ時は自動で呼ばれる |
-| `hey365_setup` | `interactive` | Work IQ の導入と認証 |
+| `hey365_setup` | `interactive` | 公式 MCP の接続を確認。ブラウザ認証が必要ならターミナルの `setup` を案内 |
 | `hey365_install` | `clients`, `dryRun` | 他の MCP クライアントへ Hey365 を登録 |
 
 ## 安全設計
@@ -222,7 +231,7 @@ node dist/index.js reconnect                   # Work IQ の認証を貼り直�
 - **事実を創作しない。** 回答に必要な情報が会話中に無い場合、返信案はその旨を明示し、あなたの判断を求めます。
 - **「対応済み」は取り消せる。** `done` にした会話でも、より新しいメッセージが届けば自動で再表示されます。読んだ分についての宣言でしかないためです。
 - **OS を勝手に変更しない。** `hey365_schedule` は既定では登録するコマンドを表示するだけで、`apply=true` を指定したときだけ実際に登録します。
-- **外部送信なし。** Microsoft Graph 以外の第三者 API もテレメトリもありません。ログは stderr のみでトークンは秘匿され、ローカル状態（`~/.hey365/state.json`）は `0600` で保存されます。
+- **M365 データの送信先は Microsoft の WorkIQ サービスのみ。** 第三者 AI API やテレメトリはありません。ログは stderr のみでトークンは秘匿され、下書き状態（`~/.hey365/state.json`）は `0600` で保存します。OAuth トークンは OS が保護する鍵で暗号化します。
 
 ## 環境変数
 
@@ -235,15 +244,16 @@ node dist/index.js reconnect                   # Work IQ の認証を貼り直�
 | `HEY365_STALE_AFTER_DAYS` | `3` | 何営業日放置されたら「放置中」として警告するか |
 | `HEY365_HOLIDAY_CALENDAR` | 自動 | `jp` で日本の祝日カレンダーを強制、`none` で無効化。タイムゾーンが `Asia/Tokyo` なら既定で `jp` |
 | `HEY365_HOLIDAYS` | – | 追加の非稼働日を `YYYY-MM-DD` のカンマ区切りで指定（全社休業日・自分の休暇など） |
-| `HEY365_WORKIQ_COMMAND` | 自動 | Work IQ CLI の起動方法を上書き |
-| `HEY365_WORKIQ_ACCOUNT` | – | 複数アカウント時に使用するアカウント |
+| `HEY365_WORKIQ_BACKEND` | `mcp` | 公式ホスト型 MCP。`cli` で旧方式を明示選択 |
+| `HEY365_WORKIQ_COMMAND` | 自動 | 旧 CLI の起動方法を上書き（CLI モードのみ） |
+| `HEY365_WORKIQ_ACCOUNT` | – | サインインヒントとアカウント別キャッシュ。旧方式では CLI のアカウント選択 |
 | `HEY365_WORKIQ_TIMEOUT_MS` | `120000` | 1回あたりのタイムアウト |
 | `HEY365_AUTO_RECONNECT` | `on` | `off`/`0` で認証切れ時の自動再接続を無効化 |
-| `HEY365_RECONNECT_TIMEOUT_MS` | `120000` | 自動再接続（`workiq auth login`）の上限時間 |
+| `HEY365_RECONNECT_TIMEOUT_MS` | `120000` | 旧 CLI の自動ログインの上限時間 |
 | `HEY365_RECONNECT_INTERACTIVE_TIMEOUT_MS` | `180000` | ブラウザ認証まで進んだ場合の上限時間 |
 | `HEY365_RECONNECT_COOLDOWN_MS` | `60000` | 再接続に失敗したあとの待機時間。連続失敗で倍増（上限15分） |
-| `HEY365_READINESS_ATTEMPTS` | `5` | 再接続後に Outlook・Teams・Calendar の実読取りを確認する回数（最大10） |
-| `HEY365_READINESS_INTERVAL_MS` | `5000` | 実読取りに失敗した場合の次の確認までの間隔 |
+| `HEY365_READINESS_ATTEMPTS` | `5` | 旧 CLI の再接続後の確認回数（最大10）。公式 MCP では権限拒否の読取りを反復しない |
+| `HEY365_READINESS_INTERVAL_MS` | `5000` | 旧 CLI の実読取り確認の間隔 |
 | `HEY365_READINESS_PROBE_TIMEOUT_MS` | `30000` | 1回の実読取り確認の上限時間 |
 | `HEY365_LOG_LEVEL` | `info` | `silent`/`error`/`warn`/`info`/`debug` |
 | `HEY365_STATE_FILE` | `~/.hey365/state.json` | 返信案の保存先 |
@@ -254,35 +264,30 @@ node dist/index.js reconnect                   # Work IQ の認証を貼り直�
 
 | コード | 対処 |
 |---|---|
-| `WORKIQ_NOT_INSTALLED` | `node dist/index.js setup`、または `npm i -g @microsoft/workiq` |
-| `WORKIQ_NOT_AUTHENTICATED` / `WORKIQ_AUTH_EXPIRED` | 通常は自動で再接続されます。残った場合は `node dist/index.js reconnect`（AI には「Work IQ につなぎ直して」） |
-| `WORKIQ_EULA_REQUIRED` | `npx @microsoft/workiq accept-eula` |
-| `WORKIQ_ADMIN_CONSENT_REQUIRED` | テナント管理者に `npx @microsoft/workiq auth consent` を依頼 |
+| `WORKIQ_NOT_INSTALLED` | 旧 CLI のみ。CLI を導入するか、既定の公式 MCP を利用 |
+| `WORKIQ_NOT_AUTHENTICATED` / `WORKIQ_AUTH_EXPIRED` | トークン更新は自動。ユーザー操作が必要ならターミナルで `node dist/index.js setup` |
+| `WORKIQ_EULA_REQUIRED` | 旧 CLI のみ。`npx @microsoft/workiq accept-eula` |
+| `WORKIQ_ADMIN_CONSENT_REQUIRED` | 管理者に[公式テナント有効化ガイド](https://github.com/microsoft/work-iq/blob/main/ADMIN-INSTRUCTIONS.md)の確認を依頼 |
 | `WORKIQ_CONNECTION_ERROR` | ネットワークを確認して再実行 |
-| `WORKIQ_PERMISSION_DENIED` | 一部ソースが読めません。取得できた範囲で継続します |
+| `WORKIQ_PERMISSION_DENIED` | エラー詳細のスコープ・ポリシーを確認。再ログインや別エンドポイントへの切り替えを反復しない |
+| `WORKIQ_CREDENTIAL_STORE_ERROR` | OS の資格情報ストアのロックやアクセスを確認。平文保存には切り替えない |
 | `WORKIQ_WRITE_DISABLED` | トリアージと返信案は利用可。送信はポリシーで不可 |
 | `SESSION_NOT_FOUND` | 件名のキーワードや日付を変えて `hey365_session` を再実行 |
 | `DRAFT_MISMATCH` | 返信案が更新されています。内容を確認して送り直してください |
 
-Windows では、ブローカー認証（WAM）でサインインに失敗することがあります。`setup` が自動的に無効化（`workiq config set disableBrokeredAuth=true`）し、ブラウザ認証にフォールバックします。
+**403 は認証切れ（401）とは別です。** 委任スコープ不足、ポリシー拒否、権限不足、管理者同意不足はそれぞれの確認が必要で、新しい MCP でもこれらの制御を回避することはできません。公式ガイドには、サービスプリンシパル未作成に伴う `AADSTS650052` / Access Denied の対処も記載されています。テナント有効化は管理者が確認・実施し、Hey365 が同意やアクセス制御を変更することはありません。
+
+ヘルスチェックには接続先の `backend` を表示します。公式 MCP の `writeAccess` は `"unknown"` です。フォルダーを読めるだけで送信可能とは判定せず、ヘルスチェックで試験送信もしません。
 
 ### 認証が切れたとき
 
-Work IQ のトークンは数時間〜数日で失効します。Hey365 はこれを**自分で処理します**。
+MCP SDK が必要に応じて OAuth トークンを更新します。それでも認証エラーになった場合、Hey365 が1回再接続し、Outlook・Teams・Calendar の読取り成功後にだけ元の操作を再実行します。権限やポリシーによる拒否はその場で終了し、結果不明の書き込みタイムアウトを MCP ラッパーが再送することもありません。
 
-1. ツール実行中に認証切れを検知したら、Hey365 がその場で再接続します。このとき **`force=true` で動きます** — ツール自身が「認証が切れている」ことを観測済みなので、再接続前のヘルスチェックは省略します。
-2. 最初に **Microsoft 公式 Work IQ CLI** の `workiq auth login --account …` を必ず実行します。Work IQ CLI 1.0.1 自体には `--force` オプションが無いため、`force=true` は「接続済み表示でもこの公式コマンドを省略しない」という Hey365 側の制御です。
-3. 公式 CLI の終了コードだけでは完了扱いにしません。Outlook・Teams・Calendar を1回のバッチで実際に読み、失敗した面があれば5秒間隔で最大5回確認します。
-4. 公式 CLI で復旧できない、または5回確認しても3面を読めない場合にだけ、**従来の Broker 無効化＋ブラウザ認証**へ進み、再度最大5回確認します。「再認証してください」とユーザーに聞き返すことはありません。
-5. 空の受信箱やチャット一覧は「読取り成功」と判定し、API エラーだけを失敗として扱います。3面すべてが読めてから、**元のツールを同じ引数でもう一度実行**します。
-
-同時に複数のツールが失敗しても再接続は1本しか走りません（単一フライト）。公式 CLI と既存復旧の両段階（最大計10回の実読取り確認）を使い切って初めて復旧失敗とし、そのあとは `HEY365_RECONNECT_COOLDOWN_MS`（既定60秒）待ちます。**連続して失敗するほど待機時間が倍々に伸びます**（上限15分）。ブラウザ認証が自動で走るため、サインインできない状態でウィンドウが開き続けないようにするためです。
-
-手動でやり直したいときは AI に「**Work IQ につなぎ直して**」と言うか、ターミナルで次を実行します。明示的な実行は待機時間を無視して即座に再試行します。
+同時に複数のツールが失敗しても再接続は1本だけです。再接続失敗後は既定60秒待ち、連続失敗で待機時間が倍増します（上限15分）。MCP ホスト内でブラウザ操作が必要になった場合は、ブラウザを繰り返し開かずターミナルの `setup` を案内します。従来の CLI ログイン／Broker 無効化は `HEY365_WORKIQ_BACKEND=cli` の明示指定時のみ動きます。
 
 ```bash
-node dist/index.js reconnect              # 接続済みなら何もしない
-node dist/index.js reconnect --force      # 接続済みでも貼り直す
+node dist/index.js reconnect              # 公式 MCP に再接続して読取り確認
+node dist/index.js setup                  # 必要な場合にブラウザでサインイン
 node dist/index.js reconnect --no-browser # ブラウザを開かず、キャッシュだけで試す
 ```
 

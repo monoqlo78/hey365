@@ -4,8 +4,9 @@ import { homedir } from 'node:os';
 import { createRequire } from 'node:module';
 import { delimiter, dirname, join } from 'node:path';
 
-import { Hey365Error, classifyFailure } from '../utils/errors.js';
+import { Hey365Error, classifyFailure, isAuthFailure } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
+import { callWorkIqMcp, workIqBackend, WORKIQ_MCP_URL } from './workiq-mcp.js';
 
 export interface RunResult {
   stdout: string;
@@ -162,6 +163,7 @@ export function resetCommandCache(): void {
 }
 
 export function describeCommand(): string {
+  if (workIqBackend() === 'mcp') return WORKIQ_MCP_URL;
   const resolved = resolveWorkIqCommand();
   return `${resolved.command} ${resolved.baseArgs.join(' ')}`.trim();
 }
@@ -299,7 +301,7 @@ export function extractJsonDocuments(raw: string): unknown[] {
 interface WrappedResult {
   data: unknown;
   statusCode?: number;
-  error?: { error?: { code?: string; message?: string } };
+  error?: { code?: string; message?: string; error?: { code?: string; message?: string } };
 }
 
 function isWrapped(value: unknown): value is { results: WrappedResult[] } {
@@ -308,12 +310,19 @@ function isWrapped(value: unknown): value is { results: WrappedResult[] } {
 
 /** Normalises one CLI JSON document into either a payload or a Hey365Error. */
 function unwrap(document: unknown): { ok: true; data: unknown } | { ok: false; error: Hey365Error } {
+  if (typeof document === 'object' && document !== null && !isWrapped(document)) {
+    const response = document as Partial<WrappedResult>;
+    if (response.error || (typeof response.statusCode === 'number' && response.statusCode >= 400)) {
+      return unwrap({ results: [response] });
+    }
+  }
   if (isWrapped(document)) {
     const first = document.results[0];
-    if (!first) return { ok: true, data: undefined };
-    if (first.error) {
-      const message = first.error.error?.message ?? 'Microsoft Graph request failed';
-      const code = classifyFailure(`${first.error.error?.code ?? ''} ${message}`, first.statusCode);
+    if (!first) return { ok: false, error: new Hey365Error('INTERNAL_ERROR', 'WorkIQ returned no result') };
+    if (first.error || (first.statusCode !== undefined && first.statusCode >= 400)) {
+      const body = first.error?.error ?? first.error;
+      const message = body?.message ?? `WorkIQ request failed (HTTP ${first.statusCode ?? 'unknown'})`;
+      const code = classifyFailure(`${body?.code ?? ''} ${message}`, first.statusCode);
       return { ok: false, error: new Hey365Error(code, message) };
     }
     return { ok: true, data: first.data };
@@ -354,6 +363,11 @@ export async function tryFetch<T = unknown>(url: string, options?: RunOptions): 
   try {
     return await fetchOne<T>(url, options);
   } catch (error) {
+    if (error instanceof Hey365Error && (
+      isAuthFailure(error.code) ||
+      error.code === 'WORKIQ_PERMISSION_DENIED' ||
+      error.code === 'WORKIQ_ADMIN_CONSENT_REQUIRED'
+    )) throw error;
     logger.debug('fetch failed', { url: url.split('?')[0], error: (error as Error).message });
     return undefined;
   }
@@ -365,10 +379,22 @@ export async function tryFetch<T = unknown>(url: string, options?: RunOptions): 
  */
 export async function fetchMany<T = unknown>(urls: string[], options?: RunOptions): Promise<Array<GraphCallOutcome<T>>> {
   if (urls.length === 0) return [];
-  const result = await runWorkIq(['fetch', '--urls', ...urls], options);
-  assertCliSuccess(result, 'fetch');
-
-  const documents = extractJsonDocuments(`${result.stdout}\n${result.stderr}`);
+  let documents: unknown[];
+  if (workIqBackend() === 'mcp') {
+    const payload = await callWorkIqMcp('fetch', { entityUrls: urls.map(workIqPath) }, options?.timeoutMs);
+    if (isWrapped(payload)) {
+      documents = payload.results.map((entry) => ({ results: [entry] }));
+    } else {
+      throw new Hey365Error('INTERNAL_ERROR', 'Unexpected WorkIQ fetch response: expected results');
+    }
+  } else {
+    const result = await runWorkIq(['fetch', '--urls', ...urls], options);
+    assertCliSuccess(result, 'fetch');
+    documents = extractJsonDocuments(`${result.stdout}\n${result.stderr}`)
+      .flatMap((document) => isWrapped(document)
+        ? document.results.map((entry) => ({ results: [entry] }))
+        : [document]);
+  }
   const outcomes = documents.map((document) => {
     const unwrapped = unwrap(document);
     return unwrapped.ok
@@ -385,6 +411,9 @@ export async function fetchMany<T = unknown>(urls: string[], options?: RunOption
 }
 
 export async function callFunction<T = unknown>(url: string, options?: RunOptions): Promise<T> {
+  if (workIqBackend() === 'mcp') {
+    return hostedPayload<T>(await callWorkIqMcp('call_function', { functionUrl: workIqPath(url) }, options?.timeoutMs));
+  }
   const result = await runWorkIq(['call-function', '--url', url], options);
   assertCliSuccess(result, 'call-function');
   const [document] = extractJsonDocuments(`${result.stdout}\n${result.stderr}`);
@@ -394,6 +423,9 @@ export async function callFunction<T = unknown>(url: string, options?: RunOption
 }
 
 export async function doAction<T = unknown>(url: string, body?: unknown, options?: RunOptions): Promise<T> {
+  if (workIqBackend() === 'mcp') {
+    return hostedPayload<T>(await callWorkIqMcp('do_action', { actionUrl: workIqPath(url), jsonBody: body ?? {} }, options?.timeoutMs));
+  }
   const args = ['do-action', '--url', url];
   if (body !== undefined) args.push('--body', JSON.stringify(body));
   const result = await runWorkIq(args, options);
@@ -406,6 +438,9 @@ export async function doAction<T = unknown>(url: string, body?: unknown, options
 }
 
 export async function createEntity<T = unknown>(url: string, body: unknown, options?: RunOptions): Promise<T> {
+  if (workIqBackend() === 'mcp') {
+    return hostedPayload<T>(await callWorkIqMcp('create_entity', { parentUrl: workIqPath(url), jsonBody: body }, options?.timeoutMs));
+  }
   const result = await runWorkIq(['create', '--url', url, '--body', JSON.stringify(body)], options);
   assertCliSuccess(result, 'create');
   const [document] = extractJsonDocuments(`${result.stdout}\n${result.stderr}`);
@@ -425,6 +460,17 @@ export interface AskResult {
  * meeting summarisation so Hey365 needs no extra model credentials.
  */
 export async function ask(question: string, options?: RunOptions & { conversationId?: string }): Promise<AskResult> {
+  if (workIqBackend() === 'mcp') {
+    const result = await callWorkIqMcp('ask', {
+      question,
+      ...(options?.conversationId ? { conversationId: options.conversationId } : {}),
+    }, options?.timeoutMs ?? 180_000);
+    const text = extractAskText(result);
+    if (!text) throw new Hey365Error('INTERNAL_ERROR', 'WorkIQ ask returned no answer');
+    const conversationId = typeof result === 'object' && result !== null && 'conversationId' in result
+      && typeof result.conversationId === 'string' ? result.conversationId : undefined;
+    return { text: collapseDoubledAnswer(text), conversationId };
+  }
   const args = ['ask', '--question', question, '--json'];
   if (options?.conversationId) args.push('--conversation-id', options.conversationId);
   const result = await runWorkIq(args, { timeoutMs: options?.timeoutMs ?? 180_000 });
@@ -440,11 +486,51 @@ export async function ask(question: string, options?: RunOptions & { conversatio
           : undefined;
       return { text: collapseDoubledAnswer(text), conversationId };
     }
+
   }
 
   const fallback = result.stdout.trim();
   if (!fallback) throw new Hey365Error('INTERNAL_ERROR', 'Work IQ ask returned an empty response');
   return { text: collapseDoubledAnswer(fallback) };
+}
+
+function hostedPayload<T>(payload: unknown): T {
+  const result = unwrap(payload);
+  if (!result.ok) throw result.error;
+  const status = isWrapped(payload) ? payload.results[0]?.statusCode : undefined;
+  if (status !== undefined && status >= 200 && status < 300 && result.data == null) return undefined as T;
+  if (result.data === undefined || result.data === null) {
+    throw new Hey365Error('INTERNAL_ERROR', 'WorkIQ returned no result; operation outcome is unknown');
+  }
+  return result.data as T;
+}
+
+/** Re-encode query values once, leaving OData property-path separators intact. */
+export function workIqPath(path: string): string {
+  if (!path.startsWith('/') || path.startsWith('//') || /^\/v\d/i.test(path)) {
+    throw new Hey365Error('INVALID_INPUT', 'WorkIQ requires a server-relative path without an API version');
+  }
+  const separator = path.indexOf('?');
+  if (separator < 0) return path;
+  const pathname = path.slice(0, separator);
+  const query = path.slice(separator + 1).split('&').map((part) => {
+    const equals = part.indexOf('=');
+    if (equals < 0) throw new Hey365Error('INVALID_INPUT', 'Invalid WorkIQ query parameter');
+    const key = part.slice(0, equals);
+    let value: string;
+    try {
+      value = decodeURIComponent(part.slice(equals + 1));
+    } catch {
+      throw new Hey365Error('INVALID_INPUT', 'Invalid WorkIQ query encoding');
+    }
+    const preservePropertyPaths = ['$filter', '$orderby', '$select', '$expand'].includes(key);
+    const encoded = value.split(/('(?:[^']|'')*')/).map((part, index) => {
+      const segment = encodeURIComponent(part).replace(/'/g, '%27');
+      return preservePropertyPaths && index % 2 === 0 ? segment.replace(/%2F/gi, '/') : segment;
+    }).join('');
+    return `${key}=${encoded}`;
+  }).join('&');
+  return `${pathname}?${query}`;
 }
 
 /**

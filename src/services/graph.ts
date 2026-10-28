@@ -131,7 +131,7 @@ export function calendarUrl(start: Date, end: Date, top: number): string {
 }
 
 export function chatMessagesUrl(chatId: string, top: number): string {
-  return `/me/chats/${encodeURIComponent(chatId)}/messages?$top=${top}`;
+  return `/chats/${encodeURIComponent(chatId)}/messages?$top=${top}&$select=id,chatId,replyToId,messageType,createdDateTime,lastModifiedDateTime,deletedDateTime,subject,summary,importance,webUrl,body,from,mentions`;
 }
 
 export function channelRepliesUrl(teamId: string, channelId: string, messageId: string, top: number): string {
@@ -193,7 +193,7 @@ export async function searchMail(keyword: string, top = 40): Promise<GraphMessag
 }
 
 export async function listCalendar(start: Date, end: Date, top = 50): Promise<GraphEvent[]> {
-  const result = await tryFetch<GraphCollection<GraphEvent>>(calendarUrl(start, end, top));
+  const result = await fetchOne<GraphCollection<GraphEvent>>(calendarUrl(start, end, top));
   return result?.value ?? [];
 }
 
@@ -250,7 +250,7 @@ export async function searchTeamsMessages(since: Date, size = 300, keyword?: str
 }
 
 export async function getChat(chatId: string): Promise<GraphChat | undefined> {
-  return await tryFetch<GraphChat>(`/me/chats/${encodeURIComponent(chatId)}?$expand=members`);
+  return await tryFetch<GraphChat>(`/chats/${encodeURIComponent(chatId)}?$expand=members`);
 }
 
 export async function getChatMessages(chatId: string, top = 12): Promise<GraphChatMessage[]> {

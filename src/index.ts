@@ -8,6 +8,7 @@ import { startStdioServer, HEY365_VERSION } from './server.js';
 import { digestTool, findTool, mutesTool, scheduleTool, triageTool } from './tools/index.js';
 import { asHey365Error } from './utils/errors.js';
 import { timezone } from './utils/time.js';
+import { closeWorkIqMcp } from './services/workiq-mcp.js';
 
 const USAGE = `hey365 ${HEY365_VERSION}
 
@@ -21,7 +22,7 @@ Usage:
   hey365 session <sessionId>         会議 / 会話を要約する
   hey365 health [--deep]             接続状態を確認する
   hey365 reconnect [--force]         Work IQ の認証が切れたときに再接続する
-  hey365 setup [--no-interactive]    Work IQ のインストール / 認証を復旧する
+  hey365 setup [--no-interactive]    公式 WorkIQ MCP の OAuth 認証を行う
   hey365 install [client...]         MCP クライアントに Hey365 を登録する
   hey365 --help
 
@@ -56,6 +57,7 @@ Environment:
   HEY365_HOLIDAY_CALENDAR  jp | none（既定: Asia/Tokyo なら jp）
   HEY365_HOLIDAYS          追加の非稼働日（YYYY-MM-DD のカンマ区切り）
   HEY365_WORKIQ_COMMAND    Work IQ CLI の起動コマンドを上書きする
+  HEY365_WORKIQ_BACKEND    mcp（既定）| cli（旧方式を明示指定）
   HEY365_WORKIQ_ACCOUNT    使用するアカウント（複数アカウント時）
   HEY365_AUTO_RECONNECT    off で認証切れ時の自動再接続を無効化（既定 on）
   HEY365_RECONNECT_TIMEOUT_MS  自動再接続の上限時間（既定 120000）
@@ -312,4 +314,6 @@ main().catch((error) => {
   const hey = asHey365Error(error);
   process.stderr.write(`${hey.nextStep('ja')}\n(code: ${hey.code})\n`);
   process.exitCode = 1;
+}).finally(async () => {
+  if ((process.argv[2] ?? 'mcp') !== 'mcp') await closeWorkIqMcp();
 });

@@ -49,7 +49,7 @@ What survives all three is shown to you, newest signal first, with the exact sen
 
 ```mermaid
 flowchart LR
-    A[Outlook mail<br/>Teams chats<br/>Teams channels<br/>Calendar] --> B[Work IQ CLI<br/>Microsoft Graph]
+    A[Outlook mail<br/>Teams chats<br/>Teams channels<br/>Calendar] --> B[Official WorkIQ MCP<br/>Microsoft Graph]
     B --> C[Thread reconstruction]
     C --> D[Triage<br/>signals + scoring]
     D --> E[Dedupe<br/>same topic across channels]
@@ -58,7 +58,7 @@ flowchart LR
     G --> H[Send<br/>reply in the same thread]
 ```
 
-Hey365 talks to Microsoft 365 through the [Work IQ CLI](https://www.npmjs.com/package/@microsoft/workiq), which is an authenticated Microsoft Graph proxy. Reply drafts are written by Microsoft 365 Copilot via `workiq ask`, so **Hey365 needs no API keys of its own**.
+Hey365 connects directly to the [official WorkIQ MCP](https://github.com/microsoft/work-iq/tree/main/plugins/workiq) at `https://workiq.svc.cloud.microsoft/mcp`, using Streamable HTTP and OAuth authorization-code flow with PKCE. Reads use `fetch`, functions use `call_function`, and approved writes use `do_action` / `create_entity`. Microsoft 365 Copilot generates reply drafts via `ask`, so **Hey365 needs no API keys of its own**. The old CLI backend is available only when explicitly selected with `HEY365_WORKIQ_BACKEND=cli`; failures never silently switch backends.
 
 ## Requirements
 
@@ -67,7 +67,8 @@ Hey365 talks to Microsoft 365 through the [Work IQ CLI](https://www.npmjs.com/pa
 | Node.js 20+ | `node --version` |
 | A Microsoft 365 work account | Outlook + Teams |
 | Microsoft 365 Copilot license | Required for reply drafting and session summaries |
-| `@microsoft/workiq` | Installed and authenticated automatically by `hey365 setup` |
+| OS credential store | Windows Credential Manager, macOS Keychain, or a supported Linux keyring; required for secure token persistence |
+| WorkIQ tenant enablement | Admin consent and access policies must allow the requested operations |
 
 ## Install
 
@@ -78,12 +79,20 @@ npm install
 npm run build
 ```
 
-Then connect Microsoft 365 (installs Work IQ if missing, disables broker auth, opens a browser sign-in):
+Then connect Microsoft 365 with a browser sign-in to the official hosted MCP (no Work IQ CLI installation or WAM configuration is needed):
 
 ```bash
 node dist/index.js setup
-node dist/index.js health     # should print "hey365": "ok"
+node dist/index.js health --deep
 ```
+
+The OAuth public client is `ba081686-5d24-4bc6-a0d6-d034ecffed87`; the loopback callback is `http://localhost:12798/callback`. Close any other sign-in flow using that port first. Tokens are stored as AES-256-GCM ciphertext under `~/.hey365/workiq-*.enc`; only the encryption key is stored in the OS credential store. Plaintext storage is never used. `HEY365_HOME` changes the cache directory; `HEY365_WORKIQ_ACCOUNT` selects a separate cache and provides a sign-in hint.
+
+**A working WorkIQ connection in Copilot does not sign Hey365 in.** Each MCP host owns its credentials; Hey365 does not copy Copilot's or the legacy CLI's tokens. Run `setup` once from a terminal. Normal MCP tool calls can refresh tokens but never launch a sign-in browser or consume the MCP stdio stream.
+
+### Meeting-list contract
+
+For a known time range, Hey365 calls `fetch` on `/me/calendarView` with explicit `startDateTime`, `endDateTime`, `$select`, and `$top`. This includes recurring occurrences; it does not use semantic `ask` to enumerate meetings. Query values are URL-encoded once, while opaque entity IDs are preserved. A failed meeting read is surfaced as an error, not an empty calendar. The existing per-request meeting limit still applies.
 
 ## Register with your MCP client
 
@@ -211,7 +220,7 @@ node dist/index.js reconnect                   # re-establish the Work IQ sign-i
 | `hey365_schedule` | `action` (`list`/`add`/`remove`), `job`, `at`, `weekdaysOnly`, `apply` | Register, remove or list scheduled digest runs |
 | `hey365_health` | `deep` | Connection, authentication, read/write status |
 | `hey365_reconnect` | `force`, `browser` | Re-establish the Work IQ sign-in. Called automatically when a session expires |
-| `hey365_setup` | `interactive` | Install + authenticate Work IQ |
+| `hey365_setup` | `interactive` | Check hosted WorkIQ; use terminal `setup` if browser sign-in is needed |
 | `hey365_install` | `clients`, `dryRun` | Register Hey365 with other MCP clients |
 
 ## Safety
@@ -222,7 +231,7 @@ node dist/index.js reconnect                   # re-establish the Work IQ sign-i
 - **Drafts never invent facts.** If the thread lacks the information needed to answer, the draft says so and asks you to decide.
 - **"Handled" is reversible.** A conversation you marked done comes back automatically once a newer message arrives, because that was only ever a statement about what you had already read.
 - **Scheduling does not touch your machine silently.** `hey365_schedule` prints the exact command it would register and only writes it when you pass `apply=true`.
-- **Nothing leaves your machine except through Microsoft Graph.** No third-party API, no telemetry. Logs go to stderr with tokens redacted, and local state (`~/.hey365/state.json`) is written with `0600`.
+- **M365 data goes only to Microsoft's WorkIQ service.** No third-party AI API or telemetry. Logs go to stderr with tokens redacted. Local draft state (`~/.hey365/state.json`) is written with `0600`; OAuth tokens are encrypted using an OS-protected key.
 
 ## Environment variables
 
@@ -235,15 +244,16 @@ node dist/index.js reconnect                   # re-establish the Work IQ sign-i
 | `HEY365_STALE_AFTER_DAYS` | `3` | Business days after which an unanswered item is flagged as stale |
 | `HEY365_HOLIDAY_CALENDAR` | auto | `jp` forces the Japanese public-holiday calendar, `none` disables it. Defaults to `jp` when the timezone is `Asia/Tokyo` |
 | `HEY365_HOLIDAYS` | – | Extra non-working days as comma-separated `YYYY-MM-DD` (company holidays, your own leave) |
-| `HEY365_WORKIQ_COMMAND` | auto | Override how the Work IQ CLI is launched |
-| `HEY365_WORKIQ_ACCOUNT` | – | Account to use when several are signed in |
+| `HEY365_WORKIQ_BACKEND` | `mcp` | Official hosted MCP; `cli` explicitly opts into the legacy backend |
+| `HEY365_WORKIQ_COMMAND` | auto | Override the legacy CLI launch command (CLI backend only) |
+| `HEY365_WORKIQ_ACCOUNT` | – | Hosted sign-in hint and separate credential cache; CLI account selector in legacy mode |
 | `HEY365_WORKIQ_TIMEOUT_MS` | `120000` | Per-call timeout |
 | `HEY365_AUTO_RECONNECT` | `on` | Set to `off`/`0` to disable automatic reconnection when the session expires |
-| `HEY365_RECONNECT_TIMEOUT_MS` | `120000` | Time budget for an automatic `workiq auth login` |
+| `HEY365_RECONNECT_TIMEOUT_MS` | `120000` | Legacy CLI automatic login timeout |
 | `HEY365_RECONNECT_INTERACTIVE_TIMEOUT_MS` | `180000` | Time budget once it escalates to browser sign-in |
 | `HEY365_RECONNECT_COOLDOWN_MS` | `60000` | Wait after a failed reconnect; doubles per consecutive failure (capped at 15 min) |
-| `HEY365_READINESS_ATTEMPTS` | `5` | Number of real Outlook/Teams/Calendar read checks after reconnecting (max 10) |
-| `HEY365_READINESS_INTERVAL_MS` | `5000` | Delay before the next read check when a surface is not ready |
+| `HEY365_READINESS_ATTEMPTS` | `5` | Legacy CLI readiness checks (max 10); hosted MCP does not repeat permission-denied reads |
+| `HEY365_READINESS_INTERVAL_MS` | `5000` | Legacy CLI delay between readiness checks |
 | `HEY365_READINESS_PROBE_TIMEOUT_MS` | `30000` | Time budget for each batched read check |
 | `HEY365_LOG_LEVEL` | `info` | `silent`/`error`/`warn`/`info`/`debug` |
 | `HEY365_STATE_FILE` | `~/.hey365/state.json` | Where drafts are persisted |
@@ -254,36 +264,31 @@ Run `node dist/index.js health` first. Every failure maps to a code with a concr
 
 | Code | Fix |
 |---|---|
-| `WORKIQ_NOT_INSTALLED` | `node dist/index.js setup`, or `npm i -g @microsoft/workiq` |
-| `WORKIQ_NOT_AUTHENTICATED` / `WORKIQ_AUTH_EXPIRED` | Usually recovers on its own. If it persists, run `node dist/index.js reconnect` (or tell your assistant "reconnect to Work IQ") |
-| `WORKIQ_EULA_REQUIRED` | `npx @microsoft/workiq accept-eula` |
-| `WORKIQ_ADMIN_CONSENT_REQUIRED` | Ask a tenant admin to run `npx @microsoft/workiq auth consent` |
+| `WORKIQ_NOT_INSTALLED` | Legacy CLI only: install `@microsoft/workiq`, or switch to the default hosted MCP |
+| `WORKIQ_NOT_AUTHENTICATED` / `WORKIQ_AUTH_EXPIRED` | Token refresh is automatic; if interaction is required, run `node dist/index.js setup` in a terminal |
+| `WORKIQ_EULA_REQUIRED` | Legacy CLI only: `npx @microsoft/workiq accept-eula` |
+| `WORKIQ_ADMIN_CONSENT_REQUIRED` | Ask an admin to follow the [official tenant guide](https://github.com/microsoft/work-iq/blob/main/ADMIN-INSTRUCTIONS.md) |
 | `WORKIQ_CONNECTION_ERROR` | Check the network, then retry |
-| `WORKIQ_PERMISSION_DENIED` | Some sources are not readable; Hey365 continues with the rest |
+| `WORKIQ_PERMISSION_DENIED` | Inspect the reported scope/policy error; do not loop through sign-ins or switch endpoints |
+| `WORKIQ_CREDENTIAL_STORE_ERROR` | Unlock/repair the OS credential store; no plaintext fallback is attempted |
 | `WORKIQ_WRITE_DISABLED` | Triage and drafts work, sending is blocked by policy |
 | `SESSION_NOT_FOUND` | Re-run `hey365_session` with a subject keyword or date |
 | `DRAFT_MISMATCH` | The draft changed after you saw it — review and send again |
 
-On Windows, sign-in can fail inside the broker (WAM). `setup` disables it automatically (`workiq config set disableBrokeredAuth=true`) and falls back to browser authentication.
+**HTTP 403 is not the same as an expired token (401).** Missing delegated scopes, tenant policies, insufficient privileges, and missing admin consent need their corresponding authorization changes. A new MCP connection does not bypass those controls. The official guide also documents `AADSTS650052` / “Access Denied” when WorkIQ service principals have not been provisioned; an administrator must review and perform that enablement. Hey365 does not grant tenant-wide consent or modify access policies.
+
+Health reports the active `backend`. Hosted health reports `writeAccess` as `"unknown"`: reading a mail folder cannot prove send permission, and health never sends a test message.
 
 ### When the session expires
 
-Work IQ tokens expire after hours or days. Hey365 **handles that itself** instead of asking you to re-authenticate:
+The MCP SDK refreshes OAuth tokens when needed. If a tool still reports an authentication failure, Hey365 reconnects once and checks Outlook, Teams and Calendar. It retries the original tool only after successful recovery. Permission/policy failures are terminal, and an ambiguous write timeout is never replayed by the MCP transport wrapper.
 
-1. When a tool hits an authentication failure, Hey365 reconnects on the spot with **`force=true`**. The tool already observed a dead session, so it skips the pre-login health probe.
-2. It always tries Microsoft's **official Work IQ CLI** first: `workiq auth login --account …`. Work IQ CLI 1.0.1 has no `--force` option of its own; Hey365's `force=true` means the official command is never skipped merely because a health probe said "connected."
-3. A zero exit code is not enough. Hey365 performs real reads against Outlook, Teams and Calendar in one batch, retrying unavailable surfaces up to five times at five-second intervals.
-4. Only if the official CLI fails, or those reads still fail after five checks, does Hey365 continue to the **existing broker-disable and browser-sign-in recovery**, followed by another set of readiness checks. It never stops to ask you to re-authenticate.
-5. An empty mailbox or chat list counts as a successful read; only an API failure counts as unavailable. Hey365 **re-runs the original tool with the same arguments** only after all three surfaces are readable.
-
-Concurrent failures share a single attempt (single-flight). Hey365 only reports recovery failure after exhausting both the official-CLI and existing-recovery stages (up to ten real-read checks in total). It then waits `HEY365_RECONNECT_COOLDOWN_MS` (60s by default), and **that wait doubles with each consecutive failure** (capped at 15 minutes) — now that browser sign-in happens automatically, a cache that cannot be repaired must not keep opening windows.
-
-To do it manually, tell your assistant "**reconnect to Work IQ**" or run the commands below. An explicit request always ignores the backoff and retries immediately.
+Concurrent failures share a single reconnect attempt. Failed attempts use exponential cooldown (60 seconds initially, capped at 15 minutes). When browser interaction is required in an MCP host, Hey365 reports the terminal `setup` step instead of repeatedly opening browsers. The old CLI login / broker-disable flow runs only with `HEY365_WORKIQ_BACKEND=cli`.
 
 ```bash
-node dist/index.js reconnect              # no-op when already connected
-node dist/index.js reconnect --force      # re-establish even when connected
-node dist/index.js reconnect --no-browser # cache only, never open a browser
+node dist/index.js reconnect              # reconnect and verify hosted reads
+node dist/index.js setup                  # explicit browser sign-in if needed
+node dist/index.js reconnect --no-browser # cache/refresh only, never open a browser
 ```
 
 Set `HEY365_AUTO_RECONNECT=0` to turn automatic reconnection off.

@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Hey365Error } from '../src/utils/errors.js';
 
 vi.mock('../src/services/setup.js', () => ({
   checkHealth: vi.fn(),
@@ -40,6 +41,7 @@ function loginResult(code: number) {
 
 describe('reconnect', () => {
   beforeEach(() => {
+    vi.stubEnv('HEY365_WORKIQ_BACKEND', 'cli');
     resetReconnectState();
     healthMock.mockReset();
     setupMock.mockReset();
@@ -48,6 +50,48 @@ describe('reconnect', () => {
     process.env.HEY365_READINESS_INTERVAL_MS = '0';
     process.env.HEY365_READINESS_ATTEMPTS = '3';
   });
+
+  describe('hosted reconnect', () => {
+    beforeEach(() => {
+      vi.stubEnv('HEY365_WORKIQ_BACKEND', 'mcp');
+      resetReconnectState();
+      healthMock.mockReset();
+      setupMock.mockReset();
+      workIqMock.mockReset();
+    });
+    afterEach(() => vi.unstubAllEnvs());
+
+    it('reconnects through hosted reads without launching the legacy CLI', async () => {
+      healthMock.mockResolvedValue({ authenticated: true, readAccess: true } as never);
+      expect((await reconnect({ force: true })).ok).toBe(true);
+      expect(workIqMock).not.toHaveBeenCalled();
+      expect(setupMock).not.toHaveBeenCalled();
+    });
+
+    it('stops after the first permission denial without trying login or alternate backends', async () => {
+      const error = new Hey365Error('WORKIQ_PERMISSION_DENIED', 'HTTP 403');
+      healthMock.mockResolvedValue({
+        authenticated: true, readAccess: false,
+        error: { code: error.code, message: error.message, nextStep: error.nextStep('ja') },
+      } as never);
+      const result = await reconnect({ allowInteractive: true });
+      expect(result.ok).toBe(false);
+      expect(result.health?.error?.code).toBe('WORKIQ_PERMISSION_DENIED');
+      expect(healthMock).toHaveBeenCalledTimes(1);
+      expect(workIqMock).not.toHaveBeenCalled();
+      expect(setupMock).not.toHaveBeenCalled();
+    });
+
+    it('does not launch browsers from an MCP stdio host', async () => {
+      healthMock.mockResolvedValue({ authenticated: false, readAccess: false } as never);
+      const result = await reconnect({ allowInteractive: true });
+      expect(result.ok).toBe(false);
+      expect(result.detail).toContain('hey365 setup');
+      expect(workIqMock).not.toHaveBeenCalled();
+      expect(setupMock).not.toHaveBeenCalled();
+    });
+  });
+  afterEach(() => vi.unstubAllEnvs());
 
   it('skips the work entirely when the session is healthy', async () => {
     healthMock.mockResolvedValue(connected);

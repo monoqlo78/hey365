@@ -56,15 +56,14 @@ const INSTRUCTIONS = `Hey365 は Microsoft 365 (Outlook / Teams / Calendar) を�
 - 「Work IQ につなぎ直して」「再認証して」 -> hey365_reconnect
 
 認証エラーの扱い（重要）:
-Work IQ のトークンは定期的に失効します。Hey365 は認証切れを検知すると自動的に再接続し、
-force=true で、まず Microsoft 公式 Work IQ CLI の auth login を必ず試します。公式 CLI で
-復旧できない、または Outlook・Teams・Calendar の実読取りが最大5回の確認後も成功しない
-場合にだけ、既存の Broker 無効化＋ブラウザ認証へ進みます。1回の確認失敗だけでユーザーへ
-「再認証できませんでした」と返してはいけません。それでも WORKIQ_NOT_AUTHENTICATED /
-WORKIQ_AUTH_EXPIRED が返った場合は、ユーザーに再認証を依頼せず、その場で
-hey365_reconnect(force=true) を呼び出し、成功したら元のツールを同じ引数で再実行して
-ください。再接続はローカルで完結する冪等な操作であり、ユーザーの確認は不要です。
-エラーの structuredContent.error.recovery に呼ぶべきツールが入っています。
+既定は公式ホスト型 WorkIQ MCP です。OAuth トークンは自動更新され、旧 CLI や WAM へ
+自動的に切り替えません。認証切れ時の再接続が成功した場合だけ元の操作を再実行します。
+初回認証やユーザー操作が必要な場合は、ターミナルの hey365 setup を案内してください。
+Copilot アプリの WorkIQ 接続と Hey365 の認証キャッシュは別です。
+HTTP 403、権限不足、ポリシー拒否、管理者同意不足はログインの反復では直りません。
+返されたエラー詳細を提示し、再試行や別経路への切り替えは行わないでください。
+会議の期間指定一覧は fetch の /me/calendarView を使用します。
+HEY365_WORKIQ_BACKEND=cli の明示指定時のみ従来方式を使用します。
 
 重要: hey365_triage は下書きまでしか作りません。ユーザーが明示的に送信を指示した場合のみ
 hey365_send を呼び出してください。ユーザーの確認なしに送信してはいけません。`;

@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Hey365Error } from '../src/utils/errors.js';
 
 vi.mock('../src/services/workiq.js', () => ({
   describeCommand: () => 'workiq',
@@ -21,10 +22,11 @@ const runWorkIqMock = vi.mocked(runWorkIq);
 const rememberAccountMock = vi.mocked(rememberAccount);
 
 const ok = (data: unknown) => ({ ok: true, data });
-const failed = () => ({ ok: false, error: new Error('not ready') });
+const failed = () => ({ ok: false, error: new Hey365Error('WORKIQ_CONNECTION_ERROR', 'not ready') });
 
 describe('checkHealth', () => {
   beforeEach(() => {
+    vi.stubEnv('HEY365_WORKIQ_BACKEND', 'cli');
     fetchManyMock.mockReset();
     runWorkIqMock.mockReset();
     rememberAccountMock.mockReset();
@@ -34,6 +36,7 @@ describe('checkHealth', () => {
       stderr: '',
       timedOut: false,
     });
+    afterEach(() => vi.unstubAllEnvs());
   });
 
   it('checks every M365 surface in one batched Work IQ invocation', async () => {
@@ -69,5 +72,28 @@ describe('checkHealth', () => {
     expect(report.authenticated).toBe(true);
     expect(report.readAccess).toBe(false);
     expect(report.surfaces).toEqual({ outlook: true, teams: false, calendar: true });
+  });
+
+  it('uses hosted reads without launching the CLI or claiming send permission', async () => {
+    vi.stubEnv('HEY365_WORKIQ_BACKEND', 'mcp');
+    fetchManyMock.mockResolvedValue([
+      ok({ id: 'me' }), ok({ value: [] }), ok({ value: [] }), ok({ value: [] }),
+    ]);
+    const report = await checkHealth({ deep: true });
+    expect(report.backend).toBe('mcp');
+    expect(report.authenticated).toBe(true);
+    expect(report.readAccess).toBe(true);
+    expect(report.writeAccess).toBe('unknown');
+    expect(fetchManyMock.mock.calls[0]?.[0]).toHaveLength(4);
+    expect(runWorkIqMock).not.toHaveBeenCalled();
+  });
+
+  it('preserves a 403 as a permission failure, not an expired sign-in', async () => {
+    vi.stubEnv('HEY365_WORKIQ_BACKEND', 'mcp');
+    fetchManyMock.mockResolvedValue([{ ok: false, error: new Hey365Error('WORKIQ_PERMISSION_DENIED', 'HTTP 403') }]);
+    const report = await checkHealth();
+    expect(report.workiq).toBe('error');
+    expect(report.error?.code).toBe('WORKIQ_PERMISSION_DENIED');
+    expect(report.error?.message).toContain('403');
   });
 });

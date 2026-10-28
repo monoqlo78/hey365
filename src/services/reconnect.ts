@@ -2,6 +2,8 @@ import { logger } from '../utils/logger.js';
 import { checkHealth, runSetup, type HealthReport } from './setup.js';
 import { lastKnownAccount } from './store.js';
 import { isInteractiveRuntime, runWorkIq } from './workiq.js';
+import { closeWorkIqMcp, workIqBackend } from './workiq-mcp.js';
+import { isAuthFailure } from '../utils/errors.js';
 
 /**
  * Automatic Work IQ reconnection.
@@ -150,6 +152,7 @@ export async function reconnect(options: ReconnectOptions = {}): Promise<Reconne
 }
 
 async function attempt(options: ReconnectOptions): Promise<ReconnectResult> {
+  if (workIqBackend() === 'mcp') return await reconnectHosted(options);
   // A forced reconnect is only requested after the caller has already
   // observed an auth/read failure. Probing before login adds one full Graph
   // round trip and cannot change the decision, so skip directly to login.
@@ -173,6 +176,45 @@ async function attempt(options: ReconnectOptions): Promise<ReconnectResult> {
     logger.info('Work IQ is authenticated but one or more M365 surfaces are not ready; reconnecting', {
       surfaces: health.surfaces,
     });
+  }
+
+  async function reconnectHosted(options: ReconnectOptions): Promise<ReconnectResult> {
+    if (!options.ignoreCooldown && lastFailureAt > 0 && Date.now() - lastFailureAt < cooldownMs()) {
+      return {
+        ok: false, mode: 'cooldown',
+        detail: '直前の WorkIQ MCP 再接続が失敗したため待機中です。',
+        detailEn: 'Waiting after a failed WorkIQ MCP reconnect attempt.',
+      };
+    }
+    await closeWorkIqMcp();
+    const health = await checkHealth({ deep: true, timeoutMs: readinessProbeTimeoutMs() });
+    if (health.authenticated && health.readAccess) {
+      noteSuccess();
+      return {
+        ok: true, mode: 'silent', health, account: health.account,
+        detail: '公式 WorkIQ MCP に再接続しました。',
+        detailEn: 'Reconnected to the official WorkIQ MCP.',
+      };
+    }
+    if (health.error && !isAuthFailure(health.error.code)) {
+      noteFailure();
+      return { ok: false, mode: 'failed', health, detail: health.error.nextStep, detailEn: 'WorkIQ could not be reached or authorized. Inspect the health error; sign-in was not repeated.' };
+    }
+    if (options.allowInteractive && isInteractiveRuntime()) {
+      const setup = await runSetup({ interactive: true, force: true, loginTimeoutMs: interactiveTimeoutMs() });
+      if (setup.ok) noteSuccess(); else noteFailure();
+      return {
+        ok: setup.ok, mode: setup.ok ? 'interactive' : 'failed', health: setup.health,
+        account: setup.health.account, detail: setup.message,
+        detailEn: setup.ok ? 'Connected to the official WorkIQ MCP.' : 'WorkIQ MCP setup did not complete.',
+      };
+    }
+    noteFailure();
+    return {
+      ok: false, mode: 'failed', health,
+      detail: '公式 WorkIQ MCP のサインインが必要です。ターミナルで `hey365 setup` を実行してください。旧 CLI への切り替えは行いません。',
+      detailEn: 'WorkIQ MCP needs sign-in. Run `hey365 setup` in a terminal. No fallback to the legacy CLI was attempted.',
+    };
   }
 
   const wait = cooldownMs();
@@ -362,7 +404,7 @@ export function describeReconnect(result: ReconnectResult): string {
       `writeAccess: ${result.health.writeAccess}`,
     );
   }
-  if (!result.ok && !isInteractiveRuntime()) {
+  if (!result.ok && !isInteractiveRuntime() && workIqBackend() === 'cli') {
     lines.push('', 'ターミナルで `npx -y @microsoft/workiq auth login` を実行するとブラウザ認証を完了できます。');
   }
   return lines.join('\n');
